@@ -92,6 +92,67 @@ func (s *AgentService) PresenceTTLSeconds() int {
 	return int(cache.PresenceTTL / time.Second)
 }
 
+// allowedAgentEventTypes is the closed subset of audit events an agent may
+// report from its peer-to-peer data channels (see docs/API.md).
+var allowedAgentEventTypes = map[string]bool{
+	audit.EventFileTransfer:    true,
+	audit.EventClipboardSync:   true,
+	audit.EventInputCommandTry: true,
+}
+
+// ReportEvent records a data-channel audit event reported by an agent for a
+// session it is a party to. Only the closed data-channel subset is accepted,
+// the device must own the session, and only non-content metadata is persisted
+// (never clipboard text or keystroke contents) regardless of what was sent.
+func (s *AgentService) ReportEvent(ctx context.Context, device *model.Device, sessionID, eventType string, metadata map[string]any) error {
+	if !allowedAgentEventTypes[eventType] {
+		return ErrInvalid
+	}
+	sess, err := s.store.GetSession(ctx, sessionID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return ErrNotFound
+		}
+		return err
+	}
+	if sess.DeviceID == nil || *sess.DeviceID != device.ID {
+		return ErrForbidden
+	}
+	s.audit.RecordBestEffort(ctx, audit.Entry{
+		EventType:    eventType,
+		SessionID:    audit.Ptr(sess.ID),
+		TechnicianID: sess.TechnicianID,
+		DeviceID:     audit.Ptr(device.ID),
+		Metadata:     sanitizeEventMetadata(eventType, metadata),
+	})
+	return nil
+}
+
+// sanitizeEventMetadata whitelists non-sensitive metadata per event type so an
+// agent (or a compromised peer) cannot smuggle content into the audit trail.
+func sanitizeEventMetadata(eventType string, m map[string]any) map[string]any {
+	out := map[string]any{}
+	if m == nil {
+		return out
+	}
+	keep := func(keys ...string) {
+		for _, k := range keys {
+			if v, ok := m[k]; ok {
+				out[k] = v
+			}
+		}
+	}
+	switch eventType {
+	case audit.EventFileTransfer:
+		keep("name", "size", "direction")
+	case audit.EventClipboardSync:
+		keep("direction", "length")
+	case audit.EventInputCommandTry:
+		keep("count", "kind")
+	}
+	return out
+}
+
 // OpenSessionForDevice returns the device's current pending/active session, or
 // nil if none. Used by the agent WS handler to (re)issue session-control:start.
 func (s *AgentService) OpenSessionForDevice(ctx context.Context, deviceID string) (*model.Session, error) {

@@ -9,6 +9,7 @@
 //! There is deliberately **no** terminal/PowerShell/shell/remote-script surface,
 //! and **no** hidden/silent session mode.
 
+mod audit_report;
 mod banner;
 mod capture;
 mod clipboard;
@@ -141,7 +142,7 @@ async fn run_service(cfg: Config) -> Result<()> {
         .context("connecting /ws/agent")?;
 
     let ice = ice_servers_from_env();
-    run_session_loop(conn, &cfg, ice, "Technician").await
+    run_session_loop(conn, &cfg, ice, &device_token, "Technician").await
 }
 
 // ---------------------------------------------------------------------------
@@ -200,7 +201,14 @@ async fn run_portable(cfg: Config) -> Result<()> {
         .await
         .context("connecting /ws/agent (attended)")?;
 
-    run_session_loop(conn, &cfg, join.ice_servers, "Technician").await
+    run_session_loop(
+        conn,
+        &cfg,
+        join.ice_servers,
+        &join.device_token,
+        "Technician",
+    )
+    .await
 }
 
 // ---------------------------------------------------------------------------
@@ -210,12 +218,16 @@ async fn run_session_loop(
     mut conn: SignalConnection,
     cfg: &Config,
     ice: Vec<IceServerConfig>,
+    device_token: &str,
     technician_label: &str,
 ) -> Result<()> {
     let mut sess: Option<session::Session> = None;
     let mut peer: Option<PeerSession> = None;
     // Held for the session's lifetime; dropping it logs banner removal.
     let mut _banner_handle: Option<banner::BannerHandle> = None;
+    // Per-session audit reporter + its periodic input-flush task.
+    let mut reporter: Option<audit_report::AuditReporter> = None;
+    let mut flush_task: Option<tokio::task::JoinHandle<()>> = None;
 
     while let Some(env) = conn.rx.recv().await {
         match env.kind {
@@ -251,12 +263,32 @@ async fn run_session_loop(
                         // Only now may the session go active.
                         s.activate()?;
 
+                        // Per-session audit reporter: ships file.transfer,
+                        // clipboard.sync, and aggregated input.command_attempt
+                        // (counts only) to the backend audit trail.
+                        let rep = audit_report::AuditReporter::new(
+                            cfg.api_url("/agent/events"),
+                            device_token.to_string(),
+                            sid.clone(),
+                        );
+                        let flush_rep = rep.clone();
+                        flush_task = Some(tokio::spawn(async move {
+                            let mut tick = tokio::time::interval(std::time::Duration::from_secs(5));
+                            tick.tick().await; // consume immediate first tick
+                            loop {
+                                tick.tick().await;
+                                flush_rep.flush_input();
+                            }
+                        }));
+                        reporter = Some(rep.clone());
+
                         // Build the peer connection (agent is the offerer).
                         let p = PeerSession::new(
                             sid.clone(),
                             ice.clone(),
                             cfg.downloads_dir.clone(),
                             conn.tx.clone(),
+                            Some(rep),
                         )
                         .await
                         .context("building peer connection")?;
@@ -274,6 +306,13 @@ async fn run_session_loop(
                         tracing::info!(%sid, "session active; banner shown and acked");
                     }
                     "end" => {
+                        // Flush any pending aggregated input before tearing down.
+                        if let Some(r) = reporter.take() {
+                            r.flush_input();
+                        }
+                        if let Some(t) = flush_task.take() {
+                            t.abort();
+                        }
                         if let Some(s) = sess.as_mut() {
                             let _ = s.end();
                         }
@@ -309,7 +348,14 @@ async fn run_session_loop(
         }
     }
 
-    // Socket closed or session ended: ensure the pump task is joined.
+    // Socket closed or session ended: flush any pending audit, stop the flush
+    // task, and join the pump.
+    if let Some(r) = reporter.take() {
+        r.flush_input();
+    }
+    if let Some(t) = flush_task.take() {
+        t.abort();
+    }
     conn.pump.abort();
     Ok(())
 }

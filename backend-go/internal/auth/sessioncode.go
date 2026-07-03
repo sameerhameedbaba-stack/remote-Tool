@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -51,9 +52,13 @@ func NormalizeSessionCode(code string) string {
 	return b.String()
 }
 
-// HashSessionCode returns the hex-encoded sha256 of the normalized code. Only
-// this hash is stored (in Redis, mapped to the session id).
-func HashSessionCode(code string) string {
-	sum := sha256.Sum256([]byte(NormalizeSessionCode(code)))
-	return hex.EncodeToString(sum[:])
+// HashSessionCode returns the hex-encoded HMAC-SHA256 of the normalized code
+// keyed with a server-side secret. Only this keyed hash is stored (in Redis,
+// mapped to the session id). Using a keyed HMAC rather than a bare SHA-256 means
+// that a Redis leak alone cannot brute-force the low-entropy numeric codes
+// offline — the attacker also needs the server secret.
+func HashSessionCode(secret []byte, code string) string {
+	mac := hmac.New(sha256.New, secret)
+	mac.Write([]byte(NormalizeSessionCode(code)))
+	return hex.EncodeToString(mac.Sum(nil))
 }

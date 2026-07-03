@@ -13,6 +13,7 @@
 //! (Extern crate `webrtc` is referenced as `::webrtc` to disambiguate from this
 //! module of the same name.)
 
+use crate::audit_report::AuditReporter;
 use crate::capture::ScreenSource;
 use crate::signal::{Envelope, EnvelopeType};
 use anyhow::{Context, Result};
@@ -116,6 +117,7 @@ impl PeerSession {
         ice_servers: Vec<IceServerConfig>,
         downloads_dir: PathBuf,
         out_tx: UnboundedSender<Envelope>,
+        reporter: Option<AuditReporter>,
     ) -> Result<Self> {
         let api = build_api()?;
         let config = RTCConfiguration {
@@ -175,20 +177,22 @@ impl PeerSession {
             .await
             .context("creating file channel")?;
 
-        attach_input_handler(&input);
-        attach_clipboard_handler(&clipboard);
-        attach_file_handler(&file, file_rx.clone());
+        attach_input_handler(&input, reporter.clone());
+        attach_clipboard_handler(&clipboard, reporter.clone());
+        attach_file_handler(&file, file_rx.clone(), reporter.clone());
 
         // Answerer role: attach handlers to peer-created channels by label.
         {
             let file_rx = file_rx.clone();
+            let reporter = reporter.clone();
             pc.on_data_channel(Box::new(move |dc: Arc<RTCDataChannel>| {
                 let file_rx = file_rx.clone();
+                let reporter = reporter.clone();
                 Box::pin(async move {
                     match dc.label() {
-                        "input" => attach_input_handler(&dc),
-                        "clipboard" => attach_clipboard_handler(&dc),
-                        "file" => attach_file_handler(&dc, file_rx),
+                        "input" => attach_input_handler(&dc, reporter),
+                        "clipboard" => attach_clipboard_handler(&dc, reporter),
+                        "file" => attach_file_handler(&dc, file_rx, reporter),
                         other => tracing::warn!(label = other, "ignoring unknown data channel"),
                     }
                 })
@@ -296,28 +300,38 @@ impl PeerSession {
     }
 }
 
-fn attach_input_handler(dc: &Arc<RTCDataChannel>) {
+fn attach_input_handler(dc: &Arc<RTCDataChannel>, reporter: Option<AuditReporter>) {
     dc.on_message(Box::new(move |msg: DataChannelMessage| {
+        let reporter = reporter.clone();
         Box::pin(async move {
             match serde_json::from_slice::<crate::input::InputEvent>(&msg.data) {
-                Ok(ev) => {
-                    if let Err(e) = crate::input::apply(&ev) {
-                        tracing::warn!(error = %e, "rejected input event");
+                Ok(ev) => match crate::input::apply(&ev) {
+                    Ok(()) => {
+                        // Count for the aggregated input.command_attempt audit
+                        // record; no keystroke content leaves this process.
+                        if let Some(r) = &reporter {
+                            r.note_input();
+                        }
                     }
-                }
+                    Err(e) => tracing::warn!(error = %e, "rejected input event"),
+                },
                 Err(e) => tracing::warn!(error = %e, "malformed input message"),
             }
         })
     }));
 }
 
-fn attach_clipboard_handler(dc: &Arc<RTCDataChannel>) {
+fn attach_clipboard_handler(dc: &Arc<RTCDataChannel>, reporter: Option<AuditReporter>) {
     dc.on_message(Box::new(move |msg: DataChannelMessage| {
+        let reporter = reporter.clone();
         Box::pin(async move {
             match serde_json::from_slice::<crate::clipboard::ClipboardMessage>(&msg.data) {
                 Ok(cb) => match crate::clipboard::validate(&cb) {
                     Ok(()) => {
                         tracing::info!(target: "audit.clipboard", "clipboard.sync");
+                        if let Some(r) = &reporter {
+                            r.report_clipboard(&cb.direction, cb.text.chars().count());
+                        }
                         if cb.direction == "to-agent" {
                             if let Err(e) = crate::clipboard::set_local(&cb.text) {
                                 tracing::warn!(error = %e, "clipboard set failed");
@@ -332,9 +346,14 @@ fn attach_clipboard_handler(dc: &Arc<RTCDataChannel>) {
     }));
 }
 
-fn attach_file_handler(dc: &Arc<RTCDataChannel>, file_rx: Arc<Mutex<crate::file::FileReceiver>>) {
+fn attach_file_handler(
+    dc: &Arc<RTCDataChannel>,
+    file_rx: Arc<Mutex<crate::file::FileReceiver>>,
+    reporter: Option<AuditReporter>,
+) {
     dc.on_message(Box::new(move |msg: DataChannelMessage| {
         let file_rx = file_rx.clone();
+        let reporter = reporter.clone();
         Box::pin(async move {
             let parsed = match serde_json::from_slice::<crate::file::FileMessage>(&msg.data) {
                 Ok(m) => m,
@@ -351,7 +370,21 @@ fn attach_file_handler(dc: &Arc<RTCDataChannel>, file_rx: Arc<Mutex<crate::file:
             let result = match &parsed {
                 FileOffer { id, name, size, .. } => rx.on_offer(id, name, *size).map(|_| ()),
                 FileChunk { id, seq, data } => rx.on_chunk(id, *seq, data),
-                FileComplete { id } => rx.on_complete(id).map(|_| ()),
+                FileComplete { id } => match rx.on_complete(id) {
+                    Ok((path, bytes)) => {
+                        // Audit the completed transfer with basename + size only.
+                        if let Some(r) = &reporter {
+                            let name = path
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or("")
+                                .to_string();
+                            r.report_file(&name, bytes, "to-agent");
+                        }
+                        Ok(())
+                    }
+                    Err(e) => Err(e),
+                },
                 FileAccept { .. } => Ok(()), // agent-as-sender path (TODO)
             };
             if let Err(e) = result {

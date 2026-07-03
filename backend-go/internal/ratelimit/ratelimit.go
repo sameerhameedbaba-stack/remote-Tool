@@ -13,12 +13,19 @@ type bucket struct {
 	lastFill time.Time
 }
 
-// Limiter is a per-key token bucket. Zero keys are pruned lazily on Allow.
+// maxTrackedKeys caps the number of live buckets so the map cannot grow without
+// bound. When exceeded, idle (fully-refilled) buckets are pruned on Allow — they
+// carry no state a fresh bucket wouldn't reconstruct.
+const maxTrackedKeys = 50000
+
+// Limiter is a per-key token bucket. Idle buckets are pruned on Allow once the
+// map exceeds maxTrackedKeys, bounding memory even under high key cardinality.
 type Limiter struct {
 	mu       sync.Mutex
 	buckets  map[string]*bucket
 	rate     float64 // tokens added per second
 	capacity float64 // max tokens (burst)
+	maxKeys  int
 	now      func() time.Time
 }
 
@@ -29,6 +36,7 @@ func New(perSecond, burst float64) *Limiter {
 		buckets:  map[string]*bucket{},
 		rate:     perSecond,
 		capacity: burst,
+		maxKeys:  maxTrackedKeys,
 		now:      time.Now,
 	}
 }
@@ -39,6 +47,21 @@ func (l *Limiter) Allow(key string) bool {
 	defer l.mu.Unlock()
 
 	now := l.now()
+
+	// Bound memory: if the map is large, drop any bucket that has refilled to
+	// capacity (idle) — deleting it is equivalent to never having seen the key.
+	if len(l.buckets) >= l.maxKeys {
+		for k, b := range l.buckets {
+			if k == key {
+				continue
+			}
+			refilled := minFloat(l.capacity, b.tokens+now.Sub(b.lastFill).Seconds()*l.rate)
+			if refilled >= l.capacity {
+				delete(l.buckets, k)
+			}
+		}
+	}
+
 	b, ok := l.buckets[key]
 	if !ok {
 		l.buckets[key] = &bucket{tokens: l.capacity - 1, lastFill: now}

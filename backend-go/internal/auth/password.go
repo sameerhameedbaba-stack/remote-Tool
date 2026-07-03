@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 
 	"golang.org/x/crypto/argon2"
 )
@@ -52,6 +53,27 @@ func VerifyPassword(secret, encoded string) (bool, error) {
 	}
 	got := argon2.IDKey([]byte(secret), salt, params.time, params.memory, params.threads, uint32(len(want)))
 	return subtle.ConstantTimeCompare(got, want) == 1, nil
+}
+
+var (
+	dummyHashOnce sync.Once
+	dummyHash     string
+)
+
+// DummyPasswordVerify runs a full argon2id verification against a fixed internal
+// hash and discards the result. Call it on the "principal not found" branch of a
+// login so that branch performs the same memory-hard work as a real password
+// check, removing the timing oracle that would otherwise reveal which
+// emails/accounts exist (user enumeration). See SECURITY_REVIEW.md.
+func DummyPasswordVerify(password string) {
+	dummyHashOnce.Do(func() {
+		if h, err := HashPassword("enumeration-guard-not-a-real-credential"); err == nil {
+			dummyHash = h
+		}
+	})
+	if dummyHash != "" {
+		_, _ = VerifyPassword(password, dummyHash)
+	}
 }
 
 type argonParams struct {

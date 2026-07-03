@@ -26,6 +26,9 @@ It is the reference the security review (`SECURITY_REVIEW.md`) checks against.
   `role`, `iat`, `exp`.
 - Every non-public endpoint requires a valid, unexpired JWT. Expired/invalid →
   `401 unauthorized`.
+- `POST /auth/login` is rate-limited per source IP, and the "unknown email"
+  branch performs an equivalent argon2id verification against a fixed dummy hash
+  so login timing does not reveal which emails exist (defeats user enumeration).
 - Authorization for the MVP is coarse: any authenticated technician may act on
   any device/session in the single-tenant deployment. Multi-tenant scoping is
   ROADMAP.
@@ -45,12 +48,18 @@ It is the reference the security review (`SECURITY_REVIEW.md`) checks against.
 
 - Generated with a CSPRNG, `SESSION_CODE_LENGTH` digits (default 9 → 10^9
   space), formatted for reading (`ddd-ddd-d`).
-- Stored only as `sha256(code)` in Redis, mapped to the session id, with TTL
-  `SESSION_CODE_TTL` (default 300s).
+- Stored only as a **keyed HMAC-SHA256(code)** in Redis (keyed with a
+  server-side secret), mapped to the session id, with TTL `SESSION_CODE_TTL`
+  (default 300s). Using a keyed HMAC rather than a bare hash means a Redis leak
+  alone cannot brute-force the low-entropy numeric codes offline — the attacker
+  also needs the server secret.
 - **Single-use:** redemption deletes the key atomically; a second attempt fails.
 - **Rate limiting:** `/attended/join` is rate-limited per source IP to blunt
   brute force; combined with short TTL and single-use this keeps the effective
-  guess probability negligible. (MVP uses an in-process limiter; a shared
+  guess probability negligible. The limiter key is the **real socket peer IP**;
+  `X-Forwarded-For` is deliberately **not** trusted (it is client-controlled and
+  would let an attacker rotate the key). The bucket map is size-bounded with idle
+  eviction. (MVP uses an in-process limiter; a shared, trusted-proxy-aware
   limiter is ROADMAP.)
 
 ## 4. Audit trail
@@ -58,14 +67,20 @@ It is the reference the security review (`SECURITY_REVIEW.md`) checks against.
 - Append-only `audit_events` table; the app never issues UPDATE/DELETE on it.
 - Closed set of event types (see `docs/API.md`).
 - Lifecycle events (`session.*`) are written **before** the action is
-  acknowledged; if the audit write fails, the action fails. High-volume data
-  events (`input.command_attempt`) are aggregated/sampled per session to bound
-  volume while still proving that remote control occurred, and are retried then
-  logged on failure.
+  acknowledged; if the audit write fails, the action fails. Specifically,
+  `session.start` is written before the session is flipped active, and the agent
+  WS handler treats an activation error as fatal (it ends the session), so a
+  session can never be active-yet-unaudited.
+- The three data-channel events (`file.transfer`, `clipboard.sync`,
+  `input.command_attempt`) occur peer-to-peer where the backend cannot see them,
+  so the **agent reports them** to `POST /agent/events` (device-authenticated).
+  `input.command_attempt` is aggregated into a periodic **count** so no keystroke
+  content is recorded. These are best-effort-durable (retried then logged).
 - Records capture technician id, device id, session id, event type, and a
-  minimal metadata blob (e.g. source IP, file name/size, byte counts). No
-  screen contents, keystroke contents, or clipboard contents are stored in the
-  audit trail — only that the action happened.
+  minimal, server-whitelisted metadata blob (e.g. source IP, file name/size,
+  clipboard direction/length, input count). No screen contents, keystroke
+  contents, or clipboard contents are stored in the audit trail — only that the
+  action happened. The backend discards any non-whitelisted metadata field.
 
 ## 5. Transport & media security
 
@@ -85,8 +100,10 @@ It is the reference the security review (`SECURITY_REVIEW.md`) checks against.
     injects OS input events only, never shell commands. There is no code path
     from a data-channel message to process execution.
   - **File:** the peer-supplied file name is sanitized (basename only, no path
-    separators, no traversal) and written **only** into a fixed downloads
-    directory. Size caps apply.
+    separators, no traversal, no drive/UNC prefix) and, additionally, Windows
+    reserved DOS device names (`CON`, `NUL`, `COM1`–`COM9`, `LPT1`–`LPT9`, …)
+    are rejected so they cannot escape to a device on Windows. Files are written
+    **only** into a fixed downloads directory. Size caps apply.
   - **Clipboard:** text only; no HTML/RTF/file-list clipboard formats.
 
 ## 7. Secrets handling
@@ -107,6 +124,12 @@ It is the reference the security review (`SECURITY_REVIEW.md`) checks against.
 6. Coarse authz (single tenant, all technicians equal).
 7. Signed auto-update is designed but not implemented — updates are manual.
 8. Rate limiting is in-process, not shared across replicas.
+9. The console passes the technician JWT (and the agent its device token) as a
+   WebSocket URL query parameter (`?token=`), since browsers cannot set
+   `Authorization` on a WebSocket handshake. URLs are more prone to landing in
+   proxy/access logs than headers. Mitigations: short JWT TTL and origin-checked
+   upgrades; the planned fix is a single-use short-TTL WebSocket ticket minted by
+   an authenticated HTTP endpoint (ROADMAP).
 
 None of these are silent: each is documented and none weakens the core
 guarantees (consent, visible banner, audit, no RCE).

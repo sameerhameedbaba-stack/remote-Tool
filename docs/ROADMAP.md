@@ -21,6 +21,10 @@ oversight; the MVP is built so these can be added without rearchitecting.
    ones.
 5. **Token revocation / refresh.** Add refresh tokens and a revocation list so a
    compromised technician JWT can be killed before its short TTL expires.
+5a. **WebSocket auth tickets.** Replace the `?token=` query parameter on the
+   signaling/agent sockets with a single-use, short-TTL ticket minted by an
+   authenticated HTTP endpoint, so long-lived credentials never appear in URLs
+   (and thus never in proxy/access logs).
 
 ## Capability completion (turn stubs into real features)
 

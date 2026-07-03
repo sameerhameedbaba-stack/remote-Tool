@@ -178,9 +178,17 @@ pub fn validate(ev: &InputEvent) -> Result<(), InputError> {
 /// branch that turns an event into a command/shell invocation.
 pub fn apply(ev: &InputEvent) -> Result<(), InputError> {
     validate(ev)?;
-    // Audit-worthy: every accepted remote-control action is logged. The backend
-    // aggregates these into `input.command_attempt` audit records.
-    tracing::info!(target: "audit.input", event = ?ev, "input.command_attempt");
+    // Audit-worthy: log only that a remote-control action occurred, as a
+    // discriminant (kind + up/down/move). The key `code`, coordinates, and
+    // modifiers are deliberately NOT logged — the audit trail records that an
+    // action happened, never keystroke contents (docs/SECURITY_MODEL.md §4).
+    // The durable, aggregated `input.command_attempt` record is emitted to the
+    // backend via the agent's audit reporter.
+    let (kind, action) = match ev {
+        InputEvent::Mouse { action, .. } => ("mouse", action.as_str()),
+        InputEvent::Key { action, .. } => ("key", action.as_str()),
+    };
+    tracing::info!(target: "audit.input", kind, action, "input.command_attempt");
     inject(ev);
     Ok(())
 }
@@ -205,8 +213,13 @@ fn inject(ev: &InputEvent) {
 
 #[cfg(not(windows))]
 fn inject(ev: &InputEvent) {
+    // Log only the discriminant, never the event payload (no keystroke capture).
+    let kind = match ev {
+        InputEvent::Mouse { .. } => "mouse",
+        InputEvent::Key { .. } => "key",
+    };
     tracing::debug!(
-        ?ev,
+        kind,
         "input injection not supported on this platform (log-only stub)"
     );
 }

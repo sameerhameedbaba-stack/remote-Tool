@@ -82,11 +82,16 @@ func TestGenerateSessionCodeRejectsOutOfRange(t *testing.T) {
 }
 
 func TestHashSessionCodeIgnoresFormatting(t *testing.T) {
-	if HashSessionCode("482-193-7") != HashSessionCode("4821937") {
+	secret := []byte("test-server-secret")
+	if HashSessionCode(secret, "482-193-7") != HashSessionCode(secret, "4821937") {
 		t.Fatal("expected formatting-independent hashing")
 	}
-	if HashSessionCode("111") == HashSessionCode("222") {
+	if HashSessionCode(secret, "111") == HashSessionCode(secret, "222") {
 		t.Fatal("distinct codes must hash differently")
+	}
+	// A different server secret must yield a different keyed hash for the same code.
+	if HashSessionCode(secret, "482-193-7") == HashSessionCode([]byte("other-secret"), "482-193-7") {
+		t.Fatal("keyed hash must depend on the server secret")
 	}
 }
 

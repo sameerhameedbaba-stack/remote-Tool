@@ -18,6 +18,11 @@ type loginResponse struct {
 }
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+	// Per-IP rate limit to blunt online password spraying / enumeration.
+	if !s.loginLimiter.Allow(clientIP(r)) {
+		writeError(w, http.StatusTooManyRequests, "rate_limited", "too many login attempts")
+		return
+	}
 	var req loginRequest
 	if !decodeJSON(w, r, &req) {
 		return

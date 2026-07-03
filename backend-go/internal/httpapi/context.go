@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"net"
 	"net/http"
 
 	"github.com/remote-support/backend/internal/auth"
@@ -45,22 +46,19 @@ func reqIDFrom(ctx context.Context) string {
 	return id
 }
 
-// clientIP extracts a best-effort client IP for audit metadata.
+// clientIP returns the real socket peer IP, used both for audit metadata and as
+// the rate-limit key on /attended/join and /auth/login.
+//
+// It deliberately does NOT trust X-Forwarded-For: that header is client-
+// controlled, so honoring it would let an attacker rotate the rate-limit key on
+// every request and defeat brute-force protection (see SECURITY_REVIEW.md).
+// Behind a trusted reverse proxy, parsing XFF from the right using a configured
+// trusted-hop count is a roadmap item; until then the socket address is
+// authoritative.
 func clientIP(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		// First hop is the original client.
-		for i := 0; i < len(xff); i++ {
-			if xff[i] == ',' {
-				return xff[:i]
-			}
-		}
-		return xff
-	}
-	host := r.RemoteAddr
-	for i := len(host) - 1; i >= 0; i-- {
-		if host[i] == ':' {
-			return host[:i]
-		}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
 	}
 	return host
 }

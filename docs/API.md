@@ -162,6 +162,25 @@ Presence heartbeat. Request:
 Response `200 {"ok":true, "presence_ttl_seconds":30}`. Backend refreshes the
 device's presence key in Redis (TTL 30s) and updates `last_seen_at`.
 
+### `POST /api/v1/agent/events` — device
+Ingest a **data-channel audit event** so peer-to-peer actions land in the
+durable audit trail. The agent reports these because the events occur on the
+peer-to-peer data channels the backend never sees. Request:
+```json
+{ "session_id": "...", "event_type": "file.transfer",
+  "metadata": { "name": "notes.txt", "size": 1234, "direction": "to-agent" } }
+```
+- `event_type` must be one of `file.transfer`, `clipboard.sync`,
+  `input.command_attempt` (the closed data-channel subset). Any other type →
+  `400 invalid_request`.
+- The device must be a party to `session_id` (its bound device), else
+  `403 forbidden`.
+- The backend **whitelists metadata** per type and discards anything else, so
+  no clipboard text, keystroke, or file contents can enter the audit trail even
+  if sent. Stored metadata: file (`name`, `size`, `direction`), clipboard
+  (`direction`, `length`), input (`count`, `kind`).
+- Response `202 Accepted`. Writes are best-effort-durable (retry then log).
+
 ### `POST /api/v1/attended/join` — **PUBLIC (session-code gated)**
 Portable agent redeems an attended session code. Request:
 ```json
@@ -237,14 +256,16 @@ Three labeled `RTCDataChannel`s. All messages are JSON except file chunks.
   { "t": "mouse", "x": 0.5, "y": 0.33, "button": "left", "action": "down" }
   { "t": "key", "code": "KeyA", "action": "down", "modifiers": ["ctrl"] }
   ```
-  Every distinct remote-control action the agent *receives* is audited as
-  `input.command_attempt` (sampled/aggregated — see SECURITY_MODEL). x/y are
-  normalized [0,1] fractions of the streamed surface.
+  Accepted remote-control actions are aggregated by the agent and reported as
+  `input.command_attempt` (a count only) via `POST /agent/events` — never the
+  key code or coordinates. x/y are normalized [0,1] fractions of the streamed
+  surface.
 - Channel `clipboard` (bidirectional): text only.
   ```json
   { "t": "clipboard", "direction": "to-agent|to-tech", "text": "..." }
   ```
-  Each sync writes audit `clipboard.sync`.
+  Each sync is reported as `clipboard.sync` (direction + length only) via
+  `POST /agent/events`.
 - Channel `file` (bidirectional): simple chunked transfer.
   ```json
   { "t": "file-offer", "id": "...", "name": "notes.txt", "size": 1234, "direction": "to-agent" }
@@ -252,8 +273,10 @@ Three labeled `RTCDataChannel`s. All messages are JSON except file chunks.
   { "t": "file-chunk", "id": "...", "seq": 0, "data": "<base64>" }
   { "t": "file-complete", "id": "..." }
   ```
-  Each completed transfer writes audit `file.transfer`. No path is taken from
-  the peer; the agent writes only into a fixed downloads directory.
+  Each completed transfer is reported as `file.transfer` (basename + size) via
+  `POST /agent/events`. No path is taken from the peer; the agent writes only
+  into a fixed downloads directory (peer-supplied names are sanitized to a safe
+  basename, and Windows reserved device names are rejected).
 
 ---
 

@@ -128,7 +128,13 @@ func (s *Server) handleAgentWS(w http.ResponseWriter, r *http.Request) {
 			// session. ActivateFromBanner notifies the technician itself.
 			if bannerVisible(env.Payload) {
 				if err := s.svcs.Session.ActivateFromBanner(ctx, env.SessionID, device.ID); err != nil {
-					s.log.Warn("banner activation failed", "session_id", env.SessionID, "err", err)
+					// Activation (incl. the session.start audit write) failed.
+					// Do not let an unaudited/un-activated session proceed: tell
+					// both peers to end and close the agent socket.
+					s.log.Warn("banner activation failed; ending session", "session_id", env.SessionID, "err", err)
+					s.hub.SendToAgent(device.ID, signal.ControlEnvelope(env.SessionID, "end"))
+					s.hub.SendToTech(env.SessionID, signal.ControlEnvelope(env.SessionID, "end"))
+					return
 				}
 			}
 			continue

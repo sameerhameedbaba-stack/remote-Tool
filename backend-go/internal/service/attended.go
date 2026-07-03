@@ -64,7 +64,7 @@ func (s *AttendedService) CreateCode(ctx context.Context, techID, label, ip stri
 	if err != nil {
 		return nil, err
 	}
-	if err := s.cache.StoreSessionCode(ctx, auth.HashSessionCode(code), sess.ID, s.cfg.SessionCodeTTL); err != nil {
+	if err := s.cache.StoreSessionCode(ctx, auth.HashSessionCode(s.cfg.JWTSecret, code), sess.ID, s.cfg.SessionCodeTTL); err != nil {
 		return nil, err
 	}
 
@@ -92,7 +92,7 @@ func (s *AttendedService) Join(ctx context.Context, code, hostname, os, ip strin
 	}
 
 	// Single-use: GETDEL burns the code atomically.
-	sessionID, err := s.cache.RedeemSessionCode(ctx, auth.HashSessionCode(code))
+	sessionID, err := s.cache.RedeemSessionCode(ctx, auth.HashSessionCode(s.cfg.JWTSecret, code))
 	if err != nil {
 		if errors.Is(err, cache.ErrCodeNotFound) {
 			// Absent means never-existed, expired, or already-used. We cannot

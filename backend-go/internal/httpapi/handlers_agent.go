@@ -59,3 +59,25 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 		PresenceTTLSeconds: s.svcs.Agent.PresenceTTLSeconds(),
 	})
 }
+
+type agentEventRequest struct {
+	SessionID string         `json:"session_id"`
+	EventType string         `json:"event_type"`
+	Metadata  map[string]any `json:"metadata"`
+}
+
+// handleAgentEvents ingests a data-channel audit event (file.transfer,
+// clipboard.sync, input.command_attempt) reported by the agent for a session it
+// owns, so these land in audit_events alongside the backend's lifecycle events.
+func (s *Server) handleAgentEvents(w http.ResponseWriter, r *http.Request) {
+	var req agentEventRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	device := deviceFrom(r.Context())
+	if err := s.svcs.Agent.ReportEvent(r.Context(), device, req.SessionID, req.EventType, req.Metadata); err != nil {
+		writeServiceError(w, s.log, err)
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
+}

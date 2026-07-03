@@ -102,7 +102,32 @@ pub fn sanitize_filename(raw: &str) -> Option<String> {
 
     // Cap length (leave room within typical filesystem limits).
     let capped: String = cleaned.chars().take(200).collect();
+
+    // Reject Windows reserved DOS device names (CON, PRN, AUX, NUL, COM1-9,
+    // LPT1-9). These are legal separator-free basenames, but on Windows
+    // CreateFileW resolves them to devices regardless of the target directory,
+    // escaping the "writes only into downloads dir" guarantee. Rejected on all
+    // platforms so received files are portable and the guarantee is uniform.
+    if is_windows_reserved_name(&capped) {
+        return None;
+    }
     Some(capped)
+}
+
+/// True if `name`'s stem (portion before the first `.`) is a Windows reserved
+/// device name, compared case-insensitively.
+fn is_windows_reserved_name(name: &str) -> bool {
+    let stem = name.split('.').next().unwrap_or(name);
+    let upper = stem.to_ascii_uppercase();
+    if matches!(upper.as_str(), "CON" | "PRN" | "AUX" | "NUL") {
+        return true;
+    }
+    // COM1..COM9 and LPT1..LPT9 (COM0/LPT0 are not reserved).
+    let b = upper.as_bytes();
+    b.len() == 4
+        && (upper.starts_with("COM") || upper.starts_with("LPT"))
+        && b[3].is_ascii_digit()
+        && b[3] != b'0'
 }
 
 /// Resolve the safe absolute destination path for a sanitized name inside the
@@ -199,15 +224,16 @@ impl FileReceiver {
         Ok(())
     }
 
-    /// Handle `file-complete`: flush + close, return the final path.
-    pub fn on_complete(&mut self, id: &str) -> Result<PathBuf, FileError> {
+    /// Handle `file-complete`: flush + close, return the final path and the
+    /// number of bytes written (for the audit record).
+    pub fn on_complete(&mut self, id: &str) -> Result<(PathBuf, u64), FileError> {
         let mut inbound = self
             .active
             .remove(id)
             .ok_or_else(|| FileError::UnknownTransfer(id.into()))?;
         inbound.file.flush().map_err(|_| FileError::Overflow)?;
         tracing::info!(target: "audit.file", %id, path = %inbound.dest.display(), bytes = inbound.received, "file.transfer complete");
-        Ok(inbound.dest)
+        Ok((inbound.dest, inbound.received))
     }
 }
 
@@ -244,6 +270,24 @@ mod tests {
     }
 
     #[test]
+    fn rejects_windows_reserved_names() {
+        // Bare reserved names and reserved names with an extension are rejected.
+        for n in [
+            "CON", "con", "NUL", "nul.txt", "CON.log", "COM1", "lpt9", "AUX", "PRN",
+        ] {
+            assert_eq!(sanitize_filename(n), None, "expected {n} to be rejected");
+        }
+        // Non-reserved lookalikes are still accepted.
+        assert_eq!(sanitize_filename("COM0").as_deref(), Some("COM0"));
+        assert_eq!(sanitize_filename("LPT10").as_deref(), Some("LPT10"));
+        assert_eq!(
+            sanitize_filename("console.txt").as_deref(),
+            Some("console.txt")
+        );
+        assert_eq!(sanitize_filename("comic.png").as_deref(), Some("comic.png"));
+    }
+
+    #[test]
     fn strips_control_chars() {
         assert_eq!(
             sanitize_filename("na\u{0000}me\u{0007}.txt").as_deref(),
@@ -274,8 +318,9 @@ mod tests {
         let c1 = base64::engine::general_purpose::STANDARD.encode(b"world");
         rx.on_chunk("t1", 0, &c0).unwrap();
         rx.on_chunk("t1", 1, &c1).unwrap();
-        let path = rx.on_complete("t1").unwrap();
+        let (path, bytes) = rx.on_complete("t1").unwrap();
         assert_eq!(path, dir.join("hello.txt"));
+        assert_eq!(bytes, 11);
         assert_eq!(std::fs::read(&path).unwrap(), b"hello world");
         let _ = std::fs::remove_dir_all(&dir);
     }

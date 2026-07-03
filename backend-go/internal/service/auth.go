@@ -37,6 +37,9 @@ func (s *AuthService) Login(ctx context.Context, email, password, ip string) (*L
 	tech, err := s.store.GetTechnicianByEmail(ctx, email)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
+			// Perform equivalent argon2id work so an unknown email is not
+			// distinguishable from a wrong password by timing (user enumeration).
+			auth.DummyPasswordVerify(password)
 			s.audit.RecordBestEffort(ctx, audit.Entry{
 				EventType: audit.EventAuthLoginFailed,
 				Metadata:  map[string]any{"email": email, "ip": ip, "reason": "unknown_email"},

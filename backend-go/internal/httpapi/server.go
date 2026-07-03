@@ -30,7 +30,8 @@ type Server struct {
 	cache *cache.Cache
 	log   *slog.Logger
 
-	joinLimiter *ratelimit.Limiter
+	joinLimiter  *ratelimit.Limiter
+	loginLimiter *ratelimit.Limiter
 }
 
 // NewServer wires the transport layer.
@@ -45,6 +46,9 @@ func NewServer(cfg *config.Config, svcs *service.Services, hub *signal.Hub, au *
 		log:   log,
 		// 5 join attempts burst, refilling at 1/sec per source IP.
 		joinLimiter: ratelimit.New(1, 5),
+		// 10 login attempts burst, refilling at 0.5/sec per source IP: blunts
+		// online password spraying and email-enumeration probing.
+		loginLimiter: ratelimit.New(0.5, 10),
 	}
 }
 
@@ -89,6 +93,7 @@ func (s *Server) Router() http.Handler {
 		r.Group(func(r chi.Router) {
 			r.Use(s.requireDevice)
 			r.Post("/agent/heartbeat", s.handleHeartbeat)
+			r.Post("/agent/events", s.handleAgentEvents)
 		})
 	})
 

@@ -130,20 +130,23 @@ func (s *SessionService) ActivateFromBanner(ctx context.Context, sessionID, devi
 		// Idempotent: already active/ended, nothing to do.
 		return nil
 	}
-	updated, err := s.store.MarkSessionActive(ctx, sessionID, time.Now().UTC())
-	if err != nil {
+	// Write session.start BEFORE flipping the session active. If the audit write
+	// fails we return the error and the session stays pending, so remote control
+	// can never proceed on an active-yet-unaudited session. The WS handler treats
+	// this error as fatal and tears the session down.
+	if err := s.audit.Record(ctx, audit.Entry{
+		EventType:    audit.EventSessionStart,
+		SessionID:    audit.Ptr(sess.ID),
+		TechnicianID: sess.TechnicianID,
+		DeviceID:     sess.DeviceID,
+		Metadata:     map[string]any{"banner_visible": true},
+	}); err != nil {
+		return err
+	}
+	if _, err := s.store.MarkSessionActive(ctx, sessionID, time.Now().UTC()); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return nil // raced to non-pending
 		}
-		return err
-	}
-	if err := s.audit.Record(ctx, audit.Entry{
-		EventType:    audit.EventSessionStart,
-		SessionID:    audit.Ptr(updated.ID),
-		TechnicianID: updated.TechnicianID,
-		DeviceID:     updated.DeviceID,
-		Metadata:     map[string]any{"banner_visible": true},
-	}); err != nil {
 		return err
 	}
 	// Let the technician console know the banner is up and the session is active.
