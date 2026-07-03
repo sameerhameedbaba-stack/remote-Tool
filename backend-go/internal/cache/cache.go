@@ -53,6 +53,12 @@ func (c *Cache) SetPresence(ctx context.Context, deviceID, status string) error 
 	return c.rdb.Set(ctx, presenceKey(deviceID), status, PresenceTTL).Err()
 }
 
+// DeletePresence removes a device's presence key, immediately marking it
+// offline (used to force presence expiry, e.g. in tests).
+func (c *Cache) DeletePresence(ctx context.Context, deviceID string) error {
+	return c.rdb.Del(ctx, presenceKey(deviceID)).Err()
+}
+
 // IsOnline reports whether a device presence key currently exists.
 func (c *Cache) IsOnline(ctx context.Context, deviceID string) (bool, error) {
 	n, err := c.rdb.Exists(ctx, presenceKey(deviceID)).Result()

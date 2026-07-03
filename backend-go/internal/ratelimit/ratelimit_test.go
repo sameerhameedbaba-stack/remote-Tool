@@ -1,6 +1,7 @@
 package ratelimit
 
 import (
+	"strconv"
 	"testing"
 	"time"
 )
@@ -33,6 +34,21 @@ func TestTokenBucketRefill(t *testing.T) {
 	l.now = func() time.Time { return base.Add(100 * time.Millisecond) }
 	if !l.Allow("ip") {
 		t.Fatal("should pass after refill")
+	}
+}
+
+func TestMapStaysBoundedUnderHighCardinality(t *testing.T) {
+	// Small ceiling so the test is fast; every call uses a distinct key.
+	l := New(0, 1)
+	l.maxKeys = 100
+	base := time.Now()
+	l.now = func() time.Time { return base }
+
+	for i := 0; i < 10000; i++ {
+		l.Allow("k-" + strconv.Itoa(i))
+	}
+	if len(l.buckets) > l.maxKeys {
+		t.Fatalf("bucket map grew past ceiling: len=%d, maxKeys=%d", len(l.buckets), l.maxKeys)
 	}
 }
 

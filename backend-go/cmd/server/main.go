@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	ossignal "os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -22,6 +23,13 @@ import (
 )
 
 func main() {
+	// `server -healthcheck` performs an in-process liveness probe against the
+	// running server's /healthz and exits 0/1. This lets the distroless image
+	// (no shell, no curl) declare a Docker HEALTHCHECK that runs the binary.
+	if len(os.Args) > 1 && os.Args[1] == "-healthcheck" {
+		os.Exit(healthcheck())
+	}
+
 	log := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(log)
 
@@ -29,6 +37,27 @@ func main() {
 		log.Error("fatal", "err", err)
 		os.Exit(1)
 	}
+}
+
+// healthcheck GETs the local /healthz and returns a process exit code.
+func healthcheck() int {
+	addr := os.Getenv("BACKEND_HTTP_ADDR")
+	if addr == "" {
+		addr = ":8080"
+	}
+	if strings.HasPrefix(addr, ":") {
+		addr = "127.0.0.1" + addr
+	}
+	client := &http.Client{Timeout: 3 * time.Second}
+	resp, err := client.Get("http://" + addr + "/healthz")
+	if err != nil {
+		return 1
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode == http.StatusOK {
+		return 0
+	}
+	return 1
 }
 
 func run(log *slog.Logger) error {
@@ -63,6 +92,8 @@ func run(log *slog.Logger) error {
 	}
 
 	au := audit.New(st, log)
+	// Drain best-effort audit writes before the store closes (defers run LIFO).
+	defer au.Close()
 	hub := signal.NewHub(log)
 	svcs := service.New(cfg, st, ca, au, hub, log)
 	srv := httpapi.NewServer(cfg, svcs, hub, au, st, ca, log)

@@ -97,7 +97,12 @@ func (s *AuthService) VerifyDeviceToken(ctx context.Context, token string) (*mod
 	}
 	device, err := s.store.GetDevice(ctx, deviceID)
 	if err != nil {
-		return nil, ErrUnauthorized
+		// A missing device is a genuine auth failure (401); any other store error
+		// (e.g. a DB outage) must surface as 5xx, not be masked as 401.
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, ErrUnauthorized
+		}
+		return nil, err
 	}
 	ok, err := auth.VerifyPassword(secret, device.DeviceSecretHash)
 	if err != nil || !ok {

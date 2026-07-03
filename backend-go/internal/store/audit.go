@@ -3,6 +3,8 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/remote-support/backend/internal/model"
@@ -25,6 +27,15 @@ type AuditFilter struct {
 
 // InsertAuditEvent appends one audit row. The audit table is append-only.
 func (s *Store) InsertAuditEvent(ctx context.Context, e *model.AuditEvent) error {
+	return insertAuditEvent(ctx, s.pool, e)
+}
+
+// InsertAuditEventTx appends one audit row inside a transaction.
+func (s *Store) InsertAuditEventTx(ctx context.Context, q Querier, e *model.AuditEvent) error {
+	return insertAuditEvent(ctx, q, e)
+}
+
+func insertAuditEvent(ctx context.Context, q Querier, e *model.AuditEvent) error {
 	meta := e.Metadata
 	if meta == nil {
 		meta = map[string]any{}
@@ -35,7 +46,7 @@ func (s *Store) InsertAuditEvent(ctx context.Context, e *model.AuditEvent) error
 	}
 	// Pass the JSON as a string so Postgres casts text->jsonb; a []byte would be
 	// encoded as bytea and rejected by the jsonb column.
-	_, err = s.pool.Exec(ctx,
+	_, err = q.Exec(ctx,
 		`INSERT INTO audit_events (id, event_type, session_id, technician_id, device_id, metadata, created_at)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
 		e.ID, e.EventType, e.SessionID, e.TechnicianID, e.DeviceID, string(raw), e.CreatedAt)
@@ -43,22 +54,53 @@ func (s *Store) InsertAuditEvent(ctx context.Context, e *model.AuditEvent) error
 }
 
 // ListAuditEvents returns audit rows newest-first honoring the filter and
-// keyset cursor.
+// keyset cursor. The WHERE clause is built dynamically so that only predicates
+// that are actually set are emitted; a set session_id/device_id/technician_id
+// then produces a plain `col = $n::uuid` term the partial indexes can use,
+// instead of the `($n = ” OR col = $n)` form that defeats them.
 func (s *Store) ListAuditEvents(ctx context.Context, f AuditFilter) ([]model.AuditEvent, error) {
-	rows, err := s.pool.Query(ctx,
+	var conds []string
+	var args []any
+	add := func(format string, val any) {
+		args = append(args, val)
+		conds = append(conds, fmt.Sprintf(format, len(args)))
+	}
+	if f.SessionID != "" {
+		add("session_id = $%d::uuid", f.SessionID)
+	}
+	if f.DeviceID != "" {
+		add("device_id = $%d::uuid", f.DeviceID)
+	}
+	if f.TechnicianID != "" {
+		add("technician_id = $%d::uuid", f.TechnicianID)
+	}
+	if f.EventType != "" {
+		add("event_type = $%d", f.EventType)
+	}
+	if f.Since != nil {
+		add("created_at >= $%d", *f.Since)
+	}
+	if f.Until != nil {
+		add("created_at <= $%d", *f.Until)
+	}
+	if f.CursorCreatedAt != nil && f.CursorID != "" {
+		args = append(args, *f.CursorCreatedAt, f.CursorID)
+		conds = append(conds, fmt.Sprintf("(created_at, id) < ($%d, $%d::uuid)", len(args)-1, len(args)))
+	}
+
+	where := ""
+	if len(conds) > 0 {
+		where = "WHERE " + strings.Join(conds, " AND ")
+	}
+	args = append(args, f.Limit)
+	query := fmt.Sprintf(
 		`SELECT id, event_type, session_id, technician_id, device_id, metadata, created_at
 		 FROM audit_events
-		 WHERE ($1 = '' OR session_id = $1::uuid)
-		   AND ($2 = '' OR device_id = $2::uuid)
-		   AND ($3 = '' OR technician_id = $3::uuid)
-		   AND ($4 = '' OR event_type = $4)
-		   AND ($5::timestamptz IS NULL OR created_at >= $5)
-		   AND ($6::timestamptz IS NULL OR created_at <= $6)
-		   AND ($7::timestamptz IS NULL OR (created_at, id) < ($7, $8::uuid))
+		 %s
 		 ORDER BY created_at DESC, id DESC
-		 LIMIT $9`,
-		f.SessionID, f.DeviceID, f.TechnicianID, f.EventType,
-		f.Since, f.Until, f.CursorCreatedAt, nullableUUID(f.CursorID), f.Limit)
+		 LIMIT $%d`, where, len(args))
+
+	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -81,13 +123,4 @@ func (s *Store) ListAuditEvents(ctx context.Context, f AuditFilter) ([]model.Aud
 		out = append(out, e)
 	}
 	return out, rows.Err()
-}
-
-// nullableUUID returns nil for an empty string so the ::uuid cast in the keyset
-// predicate is not applied when there is no cursor.
-func nullableUUID(id string) any {
-	if id == "" {
-		return nil
-	}
-	return id
 }

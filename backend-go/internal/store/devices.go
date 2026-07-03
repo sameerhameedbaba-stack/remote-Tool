@@ -7,9 +7,24 @@ import (
 	"github.com/remote-support/backend/internal/model"
 )
 
+// DefaultDeviceListLimit and MaxDeviceListLimit bound a device list page.
+const (
+	DefaultDeviceListLimit = 100
+	MaxDeviceListLimit     = 200
+)
+
 // CreateDevice inserts a device (unattended enrollment or ephemeral attended).
 func (s *Store) CreateDevice(ctx context.Context, d *model.Device) error {
-	_, err := s.pool.Exec(ctx,
+	return createDevice(ctx, s.pool, d)
+}
+
+// CreateDeviceTx inserts a device inside a transaction.
+func (s *Store) CreateDeviceTx(ctx context.Context, q Querier, d *model.Device) error {
+	return createDevice(ctx, q, d)
+}
+
+func createDevice(ctx context.Context, q Querier, d *model.Device) error {
+	_, err := q.Exec(ctx,
 		`INSERT INTO devices (id, name, hostname, os, device_secret_hash, mode, app_version, last_seen_at, created_at)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
 		d.ID, d.Name, d.Hostname, d.OS, d.DeviceSecretHash, d.Mode, d.AppVersion, d.LastSeenAt, d.CreatedAt)
@@ -29,15 +44,24 @@ func (s *Store) GetDevice(ctx context.Context, id string) (*model.Device, error)
 	return &d, nil
 }
 
-// ListDevices returns unattended devices, optionally filtered by a name/hostname
-// substring. Presence status is applied by the caller from Redis.
-func (s *Store) ListDevices(ctx context.Context, nameQuery string) ([]model.Device, error) {
+// ListDevices returns unattended devices (newest first), optionally filtered by
+// a name/hostname substring and capped by limit. Presence status is applied by
+// the caller from Redis. The secret hash is deliberately NOT selected: the list
+// path never needs it, so it is not fetched into memory.
+func (s *Store) ListDevices(ctx context.Context, nameQuery string, limit int) ([]model.Device, error) {
+	if limit <= 0 {
+		limit = DefaultDeviceListLimit
+	}
+	if limit > MaxDeviceListLimit {
+		limit = MaxDeviceListLimit
+	}
 	rows, err := s.pool.Query(ctx,
-		`SELECT id, name, hostname, os, device_secret_hash, mode, app_version, last_seen_at, created_at
+		`SELECT id, name, hostname, os, mode, app_version, last_seen_at, created_at
 		 FROM devices
 		 WHERE mode = 'unattended'
 		   AND ($1 = '' OR name ILIKE '%' || $1 || '%' OR hostname ILIKE '%' || $1 || '%')
-		 ORDER BY created_at DESC`, nameQuery)
+		 ORDER BY created_at DESC
+		 LIMIT $2`, nameQuery, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -46,7 +70,7 @@ func (s *Store) ListDevices(ctx context.Context, nameQuery string) ([]model.Devi
 	var out []model.Device
 	for rows.Next() {
 		var d model.Device
-		if err := rows.Scan(&d.ID, &d.Name, &d.Hostname, &d.OS, &d.DeviceSecretHash,
+		if err := rows.Scan(&d.ID, &d.Name, &d.Hostname, &d.OS,
 			&d.Mode, &d.AppVersion, &d.LastSeenAt, &d.CreatedAt); err != nil {
 			return nil, err
 		}

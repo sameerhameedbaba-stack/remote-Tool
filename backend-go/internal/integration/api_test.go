@@ -3,11 +3,17 @@
 package integration
 
 import (
+	"context"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/remote-support/backend/internal/auth"
 )
+
+// randomUUID is a well-formed UUID that no test entity uses, for 404 probes.
+const randomUUID = "11111111-1111-1111-1111-111111111111"
 
 func TestHealthAndReady(t *testing.T) {
 	if code, _ := app.doJSON(t, http.MethodGet, "/healthz", "", nil); code != http.StatusOK {
@@ -122,6 +128,14 @@ func TestUnattendedSessionLifecycle(t *testing.T) {
 	if code, _ := app.doJSON(t, http.MethodPost, "/api/v1/sessions/"+sid+"/end", app.techToken, nil); code != http.StatusOK {
 		t.Fatalf("end session: want 200, got %d", code)
 	}
+	// session.end must be audited when the session actually transitions to ended.
+	if !app.auditHas(t, sid, "session.end") {
+		t.Fatal("session.end audit record missing after /end")
+	}
+	// Ending again is idempotent: still 200, no error, no duplicate transition.
+	if code, _ := app.doJSON(t, http.MethodPost, "/api/v1/sessions/"+sid+"/end", app.techToken, nil); code != http.StatusOK {
+		t.Fatalf("idempotent end: want 200, got %d", code)
+	}
 }
 
 func TestAttendedCodeSingleUse(t *testing.T) {
@@ -172,6 +186,24 @@ func TestAgentEventsIngestAndSanitization(t *testing.T) {
 		t.Fatalf("agent events (owner): want 202, got %d", code)
 	}
 
+	// clipboard.sync with content → 202, but text must be dropped on persist.
+	if code, _ := app.doJSON(t, http.MethodPost, "/api/v1/agent/events", devTok, map[string]any{
+		"session_id": sid,
+		"event_type": "clipboard.sync",
+		"metadata":   map[string]any{"direction": "to-tech", "length": 6, "text": "SECRET"},
+	}); code != http.StatusAccepted {
+		t.Fatalf("agent events (clipboard.sync): want 202, got %d", code)
+	}
+
+	// input.command_attempt with content → 202, but content must be dropped.
+	if code, _ := app.doJSON(t, http.MethodPost, "/api/v1/agent/events", devTok, map[string]any{
+		"session_id": sid,
+		"event_type": "input.command_attempt",
+		"metadata":   map[string]any{"count": 2, "kind": "paste", "content": "rm -rf /"},
+	}); code != http.StatusAccepted {
+		t.Fatalf("agent events (input.command_attempt): want 202, got %d", code)
+	}
+
 	// Non-whitelisted event type → 400.
 	if code, _ := app.doJSON(t, http.MethodPost, "/api/v1/agent/events", devTok, map[string]any{
 		"session_id": sid, "event_type": "session.start", "metadata": map[string]any{},
@@ -214,6 +246,40 @@ func TestAgentEventsIngestAndSanitization(t *testing.T) {
 	if !found {
 		t.Fatal("file.transfer audit record not found")
 	}
+
+	// clipboard.sync must persist only direction/length; text must be dropped.
+	if !waitFor(2*time.Second, func() bool {
+		_, body := app.doJSON(t, http.MethodGet, "/api/v1/audit?event_type=clipboard.sync&session_id="+sid, app.techToken, nil)
+		for _, ev := range asList(body["events"]) {
+			meta := asMap(ev["metadata"])
+			if meta["direction"] == "to-tech" {
+				if _, leaked := meta["text"]; leaked {
+					t.Fatal("clipboard text leaked into audit metadata")
+				}
+				return true
+			}
+		}
+		return false
+	}) {
+		t.Fatal("clipboard.sync audit record not found")
+	}
+
+	// input.command_attempt must persist only count/kind; content must be dropped.
+	if !waitFor(2*time.Second, func() bool {
+		_, body := app.doJSON(t, http.MethodGet, "/api/v1/audit?event_type=input.command_attempt&session_id="+sid, app.techToken, nil)
+		for _, ev := range asList(body["events"]) {
+			meta := asMap(ev["metadata"])
+			if meta["kind"] == "paste" {
+				if _, leaked := meta["content"]; leaked {
+					t.Fatal("command content leaked into audit metadata")
+				}
+				return true
+			}
+		}
+		return false
+	}) {
+		t.Fatal("input.command_attempt audit record not found")
+	}
 }
 
 func TestAuditFilteringAndPagination(t *testing.T) {
@@ -224,7 +290,9 @@ func TestAuditFilteringAndPagination(t *testing.T) {
 	for _, ev := range asList(body["events"]) {
 		seen[ev["event_type"].(string)] = true
 	}
-	for _, want := range []string{"auth.login", "device.register", "session.request", "session.approve", "file.transfer"} {
+	// session.start is produced only by the signaling banner-ack flow (which runs
+	// after this test in the shared DB), so it is intentionally not required here.
+	for _, want := range []string{"auth.login", "device.register", "session.request", "session.approve", "session.end", "file.transfer"} {
 		if !seen[want] {
 			t.Errorf("expected audit event type %q to be present", want)
 		}
@@ -288,6 +356,144 @@ func TestAttendedJoinRateLimit(t *testing.T) {
 	if !got429 {
 		t.Fatal("expected /attended/join rate limiting to trigger a 429 within a burst")
 	}
+}
+
+func TestPresenceOnlineToOffline(t *testing.T) {
+	devID, devTok := app.enrollDevice(t, "PRESENCE-01")
+	app.heartbeat(t, devTok)
+
+	if !waitFor(2*time.Second, func() bool { return deviceStatus(t, devID) == "online" }) {
+		t.Fatal("device should be online after heartbeat")
+	}
+
+	// Force presence expiry by deleting the Redis key.
+	if err := app.cache.DeletePresence(context.Background(), devID); err != nil {
+		t.Fatalf("delete presence: %v", err)
+	}
+	if !waitFor(2*time.Second, func() bool { return deviceStatus(t, devID) == "offline" }) {
+		t.Fatal("device should be offline after presence deletion")
+	}
+
+	// Offline filter includes it; online filter excludes it.
+	if !deviceInList(t, "offline", devID) {
+		t.Fatal("?status=offline should include the offline device")
+	}
+	if deviceInList(t, "online", devID) {
+		t.Fatal("?status=online should exclude the offline device")
+	}
+	// Bogus status filter → 400.
+	if code, _ := app.doJSON(t, http.MethodGet, "/api/v1/devices?status=bogus", app.techToken, nil); code != http.StatusBadRequest {
+		t.Fatalf("?status=bogus: want 400, got %d", code)
+	}
+}
+
+func TestGetDeviceByID(t *testing.T) {
+	devID, devTok := app.enrollDevice(t, "GETDEV-01")
+	app.heartbeat(t, devTok)
+
+	// 200 with the correct id and online status.
+	if !waitFor(2*time.Second, func() bool {
+		code, body := app.doJSON(t, http.MethodGet, "/api/v1/devices/"+devID, app.techToken, nil)
+		return code == http.StatusOK && body["id"] == devID && body["status"] == "online"
+	}) {
+		t.Fatal("GET /devices/{id}: expected 200 with correct id and online status")
+	}
+	// 404 for a random (but valid) uuid.
+	if code, _ := app.doJSON(t, http.MethodGet, "/api/v1/devices/"+randomUUID, app.techToken, nil); code != http.StatusNotFound {
+		t.Fatalf("random uuid: want 404, got %d", code)
+	}
+	// 401 without a token.
+	if code, _ := app.doJSON(t, http.MethodGet, "/api/v1/devices/"+devID, "", nil); code != http.StatusUnauthorized {
+		t.Fatalf("no token: want 401, got %d", code)
+	}
+	// 400 for a non-uuid id.
+	if code, _ := app.doJSON(t, http.MethodGet, "/api/v1/devices/not-a-uuid", app.techToken, nil); code != http.StatusBadRequest {
+		t.Fatalf("non-uuid: want 400, got %d", code)
+	}
+}
+
+func TestListSessionsEndpoint(t *testing.T) {
+	devID, devTok := app.enrollDevice(t, "LISTSESS-01")
+	app.heartbeat(t, devTok)
+	_, sbody := app.doJSON(t, http.MethodPost, "/api/v1/sessions", app.techToken, map[string]string{"device_id": devID})
+	sid := asMap(sbody["session"])["id"].(string)
+
+	// 200 and the created session id present.
+	code, body := app.doJSON(t, http.MethodGet, "/api/v1/sessions", app.techToken, nil)
+	if code != http.StatusOK {
+		t.Fatalf("list sessions: want 200, got %d", code)
+	}
+	found := false
+	for _, s := range asList(body["sessions"]) {
+		if s["id"] == sid {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("created session id not present in list")
+	}
+	// 401 without a token.
+	if code, _ := app.doJSON(t, http.MethodGet, "/api/v1/sessions", "", nil); code != http.StatusUnauthorized {
+		t.Fatalf("no token: want 401, got %d", code)
+	}
+	_, _ = app.doJSON(t, http.MethodPost, "/api/v1/sessions/"+sid+"/end", app.techToken, nil)
+}
+
+func TestAttendedCodeExpiry(t *testing.T) {
+	code, body := app.doJSON(t, http.MethodPost, "/api/v1/attended/codes", app.techToken, map[string]string{"label": "expiry"})
+	if code != http.StatusCreated {
+		t.Fatalf("create code: want 201, got %d", code)
+	}
+	plain, _ := body["code"].(string)
+	expiresAt, _ := body["expires_at"].(string)
+
+	// A positive TTL must be set: expires_at is in the future.
+	exp, err := time.Parse(time.RFC3339, expiresAt)
+	if err != nil || !exp.After(time.Now()) {
+		t.Fatalf("expected a future expires_at, got %q (err=%v)", expiresAt, err)
+	}
+
+	// Force expiry by deleting the code's Redis key, then join → 404.
+	hash := auth.HashSessionCode(app.cfg.JWTSecret, plain)
+	if _, err := app.cache.RedeemSessionCode(context.Background(), hash); err != nil {
+		t.Fatalf("could not expire code key: %v", err)
+	}
+	if code, _ := app.doJSON(t, http.MethodPost, "/api/v1/attended/join", "", map[string]string{
+		"code": plain, "hostname": "x", "os": "windows",
+	}); code != http.StatusNotFound {
+		t.Fatalf("join after expiry: want 404, got %d", code)
+	}
+}
+
+func TestMalformedUUIDReturns400(t *testing.T) {
+	// Representative id path.
+	if code, _ := app.doJSON(t, http.MethodGet, "/api/v1/sessions/not-a-uuid", app.techToken, nil); code != http.StatusBadRequest {
+		t.Fatalf("GET /sessions/{bad}: want 400, got %d", code)
+	}
+	// Representative audit filter.
+	if code, _ := app.doJSON(t, http.MethodGet, "/api/v1/audit?session_id=not-a-uuid", app.techToken, nil); code != http.StatusBadRequest {
+		t.Fatalf("audit bad session_id filter: want 400, got %d", code)
+	}
+}
+
+// deviceStatus returns the presence-derived status from GET /devices/{id}.
+func deviceStatus(t *testing.T, id string) string {
+	t.Helper()
+	_, body := app.doJSON(t, http.MethodGet, "/api/v1/devices/"+id, app.techToken, nil)
+	s, _ := body["status"].(string)
+	return s
+}
+
+// deviceInList reports whether id appears in GET /devices?status=<filter>.
+func deviceInList(t *testing.T, statusFilter, id string) bool {
+	t.Helper()
+	_, body := app.doJSON(t, http.MethodGet, "/api/v1/devices?status="+statusFilter, app.techToken, nil)
+	for _, d := range asList(body["devices"]) {
+		if d["id"] == id {
+			return true
+		}
+	}
+	return false
 }
 
 // ---------------------------------------------------------------------------

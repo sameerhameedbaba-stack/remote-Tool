@@ -17,9 +17,9 @@ The backend reads all configuration from environment variables (names match
 
 ```sh
 # from the repo root
-cp .env.example .env        # then fill in real secrets
-export $(grep -v '^#' .env | xargs)   # or use your process manager / compose
-
+cp .env.example .env        # then fill in real secrets (APP_ENV=dev is preset)
+set -a; . ./.env; set +a    # sources .env verbatim — preserves the quoted
+                            # ICE_SERVERS JSON (xargs would corrupt it)
 cd backend-go
 go run ./cmd/server
 ```

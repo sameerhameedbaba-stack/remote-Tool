@@ -51,6 +51,18 @@ func ControlEnvelope(sessionID, action string) Envelope {
 	return Envelope{Type: TypeSessionControl, SessionID: sessionID, Payload: payload}
 }
 
+// StartControlEnvelope builds a session-control:start envelope that additionally
+// carries the technician's display name (fallback email) as technician_name, so
+// the agent can show who is requesting control on the mandatory consent banner.
+// technicianName may be empty; the agent treats it as optional.
+func StartControlEnvelope(sessionID, technicianName string) Envelope {
+	payload, _ := json.Marshal(map[string]string{
+		"action":          "start",
+		"technician_name": technicianName,
+	})
+	return Envelope{Type: TypeSessionControl, SessionID: sessionID, Payload: payload}
+}
+
 // BannerEnvelope builds a banner:visible envelope.
 func BannerEnvelope(sessionID string) Envelope {
 	payload, _ := json.Marshal(map[string]bool{"visible": true})

@@ -18,6 +18,12 @@ type bucket struct {
 // carry no state a fresh bucket wouldn't reconstruct.
 const maxTrackedKeys = 50000
 
+// evictScanBudget bounds how many buckets a single Allow examines while pruning
+// at capacity, keeping Allow amortized ~O(1) instead of scanning the whole map
+// under a high-cardinality flood. Map iteration order is randomized, so a
+// bounded scan still makes steady eviction progress across calls.
+const evictScanBudget = 64
+
 // Limiter is a per-key token bucket. Idle buckets are pruned on Allow once the
 // map exceeds maxTrackedKeys, bounding memory even under high key cardinality.
 type Limiter struct {
@@ -48,16 +54,36 @@ func (l *Limiter) Allow(key string) bool {
 
 	now := l.now()
 
-	// Bound memory: if the map is large, drop any bucket that has refilled to
-	// capacity (idle) — deleting it is equivalent to never having seen the key.
+	// Bound memory as a true ceiling with amortized ~O(1) work: only when the map
+	// is at capacity AND this is a new key do we prune, examining at most
+	// evictScanBudget buckets and deleting idle (fully-refilled) ones — deleting
+	// an idle bucket is equivalent to never having seen the key. If none in the
+	// sampled window are idle, evict one sampled victim so the new key still fits
+	// and the map never grows past maxKeys.
 	if len(l.buckets) >= l.maxKeys {
-		for k, b := range l.buckets {
-			if k == key {
-				continue
+		if _, exists := l.buckets[key]; !exists {
+			evicted := 0
+			scanned := 0
+			victim := ""
+			for k, b := range l.buckets {
+				if k == key {
+					continue
+				}
+				if victim == "" {
+					victim = k
+				}
+				refilled := minFloat(l.capacity, b.tokens+now.Sub(b.lastFill).Seconds()*l.rate)
+				if refilled >= l.capacity {
+					delete(l.buckets, k)
+					evicted++
+				}
+				scanned++
+				if scanned >= evictScanBudget {
+					break
+				}
 			}
-			refilled := minFloat(l.capacity, b.tokens+now.Sub(b.lastFill).Seconds()*l.rate)
-			if refilled >= l.capacity {
-				delete(l.buckets, k)
+			if evicted == 0 && victim != "" {
+				delete(l.buckets, victim)
 			}
 		}
 	}

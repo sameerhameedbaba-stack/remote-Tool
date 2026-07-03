@@ -30,7 +30,8 @@ func (s *Server) handleSignalWS(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "missing token")
 		return
 	}
-	if _, err := auth.ParseJWT(s.cfg.JWTSecret, tokenStr); err != nil {
+	claims, err := auth.ParseJWT(s.cfg.JWTSecret, tokenStr)
+	if err != nil {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "invalid or expired token")
 		return
 	}
@@ -40,8 +41,6 @@ func (s *Server) handleSignalWS(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", "session_id is required")
 		return
 	}
-	// Coarse authz (single tenant): the session must exist; any technician may
-	// attach. The socket is bound to this one session for envelope routing.
 	sess, err := s.svcs.Session.Get(r.Context(), sessionID)
 	if err != nil {
 		if errors.Is(err, service.ErrNotFound) {
@@ -49,6 +48,13 @@ func (s *Server) handleSignalWS(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeServiceError(w, s.log, err)
+		return
+	}
+	// Authorization: the connecting technician must own this session. Binding by
+	// session_id alone would let any authenticated technician attach to (and be
+	// mis-attributed on) a session that is not theirs. Reject before upgrading.
+	if sess.TechnicianID == nil || claims.Subject != *sess.TechnicianID {
+		writeError(w, http.StatusForbidden, "forbidden", "not permitted")
 		return
 	}
 
@@ -115,7 +121,7 @@ func (s *Server) handleAgentWS(w http.ResponseWriter, r *http.Request) {
 	// was down), re-issue session-control:start so the agent shows the banner.
 	if sess, err := s.svcs.Agent.OpenSessionForDevice(ctx, device.ID); err == nil &&
 		sess != nil && sess.Status == model.SessionStatusPending {
-		s.hub.SendToAgent(device.ID, signal.ControlEnvelope(sess.ID, "start"))
+		s.hub.SendToAgent(device.ID, s.svcs.Session.StartControlEnvelope(ctx, sess))
 	}
 
 	for {

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/remote-support/backend/internal/model"
 	"github.com/remote-support/backend/internal/store"
 )
@@ -18,6 +19,14 @@ type auditResponse struct {
 
 func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
+
+	// Reject malformed UUID filters before the store casts them to ::uuid (which
+	// would raise Postgres 22P02 and surface as a 500).
+	if !validOptionalUUID(w, q.Get("session_id"), "session_id") ||
+		!validOptionalUUID(w, q.Get("device_id"), "device_id") ||
+		!validOptionalUUID(w, q.Get("technician_id"), "technician_id") {
+		return
+	}
 
 	limit := 50
 	if v := q.Get("limit"); v != "" {
@@ -99,6 +108,11 @@ func decodeCursor(cur string) (time.Time, string, bool) {
 	}
 	t, err := time.Parse(time.RFC3339Nano, parts[0])
 	if err != nil {
+		return time.Time{}, "", false
+	}
+	// The id half must be a UUID: it is cast to ::uuid in the keyset predicate,
+	// so a malformed value would raise 22P02 instead of the intended 400.
+	if _, err := uuid.Parse(parts[1]); err != nil {
 		return time.Time{}, "", false
 	}
 	return t, parts[1], true

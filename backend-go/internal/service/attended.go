@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/remote-support/backend/internal/audit"
 	"github.com/remote-support/backend/internal/auth"
 	"github.com/remote-support/backend/internal/cache"
@@ -105,6 +106,9 @@ func (s *AttendedService) Join(ctx context.Context, code, hostname, os, ip strin
 
 	sess, err := s.store.GetSession(ctx, sessionID)
 	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, ErrNotFound // code mapped to a session that has vanished
+		}
 		return nil, err
 	}
 	if sess.Status != model.SessionStatusPending || sess.DeviceID != nil {
@@ -131,20 +135,25 @@ func (s *AttendedService) Join(ctx context.Context, code, hostname, os, ip strin
 		LastSeenAt:       &now,
 		CreatedAt:        now,
 	}
-	if err := s.store.CreateDevice(ctx, device); err != nil {
-		return nil, err
-	}
-	if err := s.store.BindSessionDevice(ctx, sess.ID, device.ID); err != nil {
-		return nil, err
-	}
-
-	// session.approve: end user consented by entering the code. Lifecycle event.
-	if err := s.audit.Record(ctx, audit.Entry{
-		EventType:    audit.EventSessionApprove,
-		SessionID:    audit.Ptr(sess.ID),
-		TechnicianID: sess.TechnicianID,
-		DeviceID:     audit.Ptr(device.ID),
-		Metadata:     map[string]any{"ip": ip, "hostname": hostname, "os": os},
+	// The code was already burned by the irreversible GETDEL above. Make the
+	// device create + session bind + session.approve audit atomic so a partial
+	// failure rolls back rather than leaving an orphan device or a half-bound
+	// session (with the code already spent and unrecoverable).
+	if err := s.store.WithTx(ctx, func(tx pgx.Tx) error {
+		if err := s.store.CreateDeviceTx(ctx, tx, device); err != nil {
+			return err
+		}
+		if err := s.store.BindSessionDeviceTx(ctx, tx, sess.ID, device.ID); err != nil {
+			return err
+		}
+		// session.approve: end user consented by entering the code. Lifecycle event.
+		return s.audit.RecordTx(ctx, tx, audit.Entry{
+			EventType:    audit.EventSessionApprove,
+			SessionID:    audit.Ptr(sess.ID),
+			TechnicianID: sess.TechnicianID,
+			DeviceID:     audit.Ptr(device.ID),
+			Metadata:     map[string]any{"ip": ip, "hostname": hostname, "os": os},
+		})
 	}); err != nil {
 		return nil, err
 	}

@@ -83,6 +83,13 @@ services:
       ICE_SERVERS: ${ICE_SERVERS:-["stun:coturn:3478","turn:coturn:3478"]}
       TURN_USER: ${TURN_USER:-turnuser}
       TURN_PASSWORD: ${TURN_PASSWORD}
+    healthcheck:
+      # The distroless image has no shell/curl; the binary probes its own /healthz.
+      test: ["CMD", "/server", "-healthcheck"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
     ports:
       - "8080:8080"
     networks: [internal]
@@ -93,11 +100,19 @@ services:
       dockerfile: Dockerfile
     restart: unless-stopped
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     environment:
       # NEXT_PUBLIC_* are baked at build time; also passed at runtime for clarity.
       NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:8080}
       NEXT_PUBLIC_WS_BASE_URL: ${NEXT_PUBLIC_WS_BASE_URL:-ws://localhost:8080}
+    healthcheck:
+      # node:22 ships a global fetch; probe the console's own root.
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
     ports:
       - "3000:3000"
     networks: [internal]

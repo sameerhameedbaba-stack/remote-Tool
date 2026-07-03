@@ -38,6 +38,12 @@ type EnrollResult struct {
 // enrollment token in constant time. Writes device.register.
 func (s *AgentService) Enroll(ctx context.Context, enrollmentToken, name, hostname, os, ip string) (*EnrollResult, error) {
 	if subtle.ConstantTimeCompare([]byte(enrollmentToken), []byte(s.cfg.AgentEnrollmentToken)) != 1 {
+		// Record failed enrollment attempts so brute-forcing the shared token is
+		// visible in the audit trail. Best-effort: never block/fail on audit.
+		s.audit.RecordBestEffort(ctx, audit.Entry{
+			EventType: audit.EventDeviceRegisterFailed,
+			Metadata:  map[string]any{"ip": ip},
+		})
 		return nil, ErrUnauthorized
 	}
 
@@ -73,7 +79,16 @@ func (s *AgentService) Enroll(ctx context.Context, enrollmentToken, name, hostna
 	}, nil
 }
 
-// Heartbeat refreshes the device presence key (TTL 30s) and last_seen_at.
+// lastSeenWriteThreshold is how stale last_seen_at may get before a heartbeat
+// bothers to write it back to Postgres. Online/offline status is derived purely
+// from the Redis presence key (refreshed every beat), so last_seen_at only needs
+// coarse freshness; this throttle drops the per-beat Postgres write.
+const lastSeenWriteThreshold = 2 * time.Minute
+
+// Heartbeat refreshes the device presence key (TTL 30s) every beat, and writes
+// last_seen_at/app_version to Postgres only when last_seen_at is stale beyond
+// lastSeenWriteThreshold or the reported app_version changed, avoiding write
+// amplification on the frequent (15s) heartbeat tick.
 func (s *AgentService) Heartbeat(ctx context.Context, device *model.Device, status, appVersion string) error {
 	if status == "" {
 		status = "idle"
@@ -81,8 +96,13 @@ func (s *AgentService) Heartbeat(ctx context.Context, device *model.Device, stat
 	if err := s.cache.SetPresence(ctx, device.ID, status); err != nil {
 		return err
 	}
-	if err := s.store.UpdateLastSeen(ctx, device.ID, time.Now().UTC(), appVersion); err != nil {
-		return err
+	now := time.Now().UTC()
+	stale := device.LastSeenAt == nil || now.Sub(*device.LastSeenAt) > lastSeenWriteThreshold
+	versionChanged := appVersion != "" && appVersion != device.AppVersion
+	if stale || versionChanged {
+		if err := s.store.UpdateLastSeen(ctx, device.ID, now, appVersion); err != nil {
+			return err
+		}
 	}
 	return nil
 }

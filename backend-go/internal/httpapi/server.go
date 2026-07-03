@@ -30,8 +30,9 @@ type Server struct {
 	cache *cache.Cache
 	log   *slog.Logger
 
-	joinLimiter  *ratelimit.Limiter
-	loginLimiter *ratelimit.Limiter
+	joinLimiter   *ratelimit.Limiter
+	loginLimiter  *ratelimit.Limiter
+	enrollLimiter *ratelimit.Limiter
 }
 
 // NewServer wires the transport layer.
@@ -49,6 +50,9 @@ func NewServer(cfg *config.Config, svcs *service.Services, hub *signal.Hub, au *
 		// 10 login attempts burst, refilling at 0.5/sec per source IP: blunts
 		// online password spraying and email-enumeration probing.
 		loginLimiter: ratelimit.New(0.5, 10),
+		// Mirror the login limiter for enrollment: blunts brute-forcing the shared
+		// enrollment token per source IP.
+		enrollLimiter: ratelimit.New(0.5, 10),
 	}
 }
 

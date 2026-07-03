@@ -18,9 +18,9 @@ type DeviceService struct {
 }
 
 // List returns unattended devices with status derived from Redis presence,
-// optionally filtered by name query and online/offline status.
-func (s *DeviceService) List(ctx context.Context, statusFilter, nameQuery string) ([]model.Device, error) {
-	devices, err := s.store.ListDevices(ctx, nameQuery)
+// optionally filtered by name query and online/offline status, capped by limit.
+func (s *DeviceService) List(ctx context.Context, statusFilter, nameQuery string, limit int) ([]model.Device, error) {
+	devices, err := s.store.ListDevices(ctx, nameQuery, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -44,6 +44,8 @@ func (s *DeviceService) List(ctx context.Context, statusFilter, nameQuery string
 }
 
 // Get returns one device with presence status. Returns ErrNotFound if unknown.
+// Only unattended devices are exposed, matching List: attended devices are
+// ephemeral join-time peers and must not be individually addressable.
 func (s *DeviceService) Get(ctx context.Context, id string) (*model.Device, error) {
 	device, err := s.store.GetDevice(ctx, id)
 	if err != nil {
@@ -51,6 +53,9 @@ func (s *DeviceService) Get(ctx context.Context, id string) (*model.Device, erro
 			return nil, ErrNotFound
 		}
 		return nil, err
+	}
+	if device.Mode != model.DeviceModeUnattended {
+		return nil, ErrNotFound
 	}
 	online, err := s.cache.IsOnline(ctx, id)
 	if err != nil {

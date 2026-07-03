@@ -9,7 +9,16 @@ import (
 
 // CreateSession inserts a new session row.
 func (s *Store) CreateSession(ctx context.Context, sess *model.Session) error {
-	_, err := s.pool.Exec(ctx,
+	return createSession(ctx, s.pool, sess)
+}
+
+// CreateSessionTx inserts a new session row inside a transaction.
+func (s *Store) CreateSessionTx(ctx context.Context, q Querier, sess *model.Session) error {
+	return createSession(ctx, q, sess)
+}
+
+func createSession(ctx context.Context, q Querier, sess *model.Session) error {
+	_, err := q.Exec(ctx,
 		`INSERT INTO sessions (id, device_id, technician_id, type, status, banner_visible, started_at, ended_at, created_at)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
 		sess.ID, sess.DeviceID, sess.TechnicianID, sess.Type, sess.Status,
@@ -59,7 +68,16 @@ func (s *Store) ListSessions(ctx context.Context, status, deviceID string, limit
 
 // BindSessionDevice sets the device_id on a session (attended join binding).
 func (s *Store) BindSessionDevice(ctx context.Context, sessionID, deviceID string) error {
-	tag, err := s.pool.Exec(ctx,
+	return bindSessionDevice(ctx, s.pool, sessionID, deviceID)
+}
+
+// BindSessionDeviceTx sets the device_id on a session inside a transaction.
+func (s *Store) BindSessionDeviceTx(ctx context.Context, q Querier, sessionID, deviceID string) error {
+	return bindSessionDevice(ctx, q, sessionID, deviceID)
+}
+
+func bindSessionDevice(ctx context.Context, q Querier, sessionID, deviceID string) error {
+	tag, err := q.Exec(ctx,
 		`UPDATE sessions SET device_id = $2 WHERE id = $1 AND device_id IS NULL`,
 		sessionID, deviceID)
 	if err != nil {

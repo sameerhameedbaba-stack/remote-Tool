@@ -274,14 +274,6 @@ export function Field({
 // Misc primitives
 // ---------------------------------------------------------------------------
 
-export function Kbd({ children }: { children: ReactNode }) {
-  return (
-    <kbd className="inline-flex h-5 min-w-[20px] items-center justify-center rounded border border-line-soft bg-surface px-1.5 font-mono text-[11px] text-fg-secondary">
-      {children}
-    </kbd>
-  );
-}
-
 export function Spinner({ className }: { className?: string }) {
   return <Loader2 className={cn("h-4 w-4 animate-spin", className)} aria-hidden />;
 }

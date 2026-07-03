@@ -1,7 +1,10 @@
 package httpapi
 
 import (
+	"errors"
 	"net/http"
+
+	"github.com/remote-support/backend/internal/service"
 )
 
 type enrollRequest struct {
@@ -24,6 +27,13 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 	}
 	res, err := s.svcs.Agent.Enroll(r.Context(), req.EnrollmentToken, req.Name, req.Hostname, req.OS, clientIP(r))
 	if err != nil {
+		// Rate-limit only FAILED (bad-token) attempts, so a shared valid token can
+		// still enroll many devices from one NAT'd network while online
+		// brute-force of the token is throttled to the limiter's refill rate.
+		if errors.Is(err, service.ErrUnauthorized) && !s.enrollLimiter.Allow(clientIP(r)) {
+			writeError(w, http.StatusTooManyRequests, "rate_limited", "too many enrollment attempts")
+			return
+		}
 		writeServiceError(w, s.log, err)
 		return
 	}

@@ -6,8 +6,31 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/google/uuid"
 	"github.com/remote-support/backend/internal/service"
 )
+
+// parseUUIDParam validates a required UUID value (path param or body id),
+// writing a 400 invalid_request and returning false when it is empty or
+// malformed. This keeps a bad id from reaching the store's ::uuid cast, which
+// would raise Postgres 22P02 and surface as a 500.
+func parseUUIDParam(w http.ResponseWriter, value, field string) bool {
+	if _, err := uuid.Parse(value); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", "invalid "+field)
+		return false
+	}
+	return true
+}
+
+// validOptionalUUID validates an optional UUID filter: an empty value is
+// allowed (filter absent); a non-empty malformed value writes a 400 and returns
+// false.
+func validOptionalUUID(w http.ResponseWriter, value, field string) bool {
+	if value == "" {
+		return true
+	}
+	return parseUUIDParam(w, value, field)
+}
 
 // errorEnvelope is the exact non-2xx body shape from docs/API.md.
 type errorEnvelope struct {
