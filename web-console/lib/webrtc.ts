@@ -4,11 +4,19 @@
 // data channels (input / clipboard / file) with typed message senders that
 // match the data-channel protocol in docs/API.md.
 //
-// The console is the OFFERER and receives the agent's video track. The receive
-// path is real: whenever a remote track arrives it is surfaced via `onTrack`
-// so the UI can attach it to a <video> element. The input/clipboard/file
-// senders are real — they serialize protocol JSON and push it over the
-// corresponding data channel.
+// The console is the ANSWERER: the agent (offerer) owns the screen media and
+// creates the three data channels, then sends the SDP offer once its consent
+// banner is visible. The console receives that offer, answers it, receives the
+// data channels via `ondatachannel`, and surfaces the agent's video track via
+// `onTrack` so the UI can attach it to a <video> element. The input/clipboard/
+// file senders are real — they serialize protocol JSON and push it over the
+// corresponding agent-created data channel.
+//
+// Connection ordering (POC): the console opens its signaling socket on mount
+// and waits passively for the agent's offer. In the unattended flow the agent
+// only offers after receiving `session-control:start` and acking the banner,
+// so the console is connected first in practice. Production should have the
+// backend buffer an offer for a not-yet-present peer (see docs/ROADMAP.md).
 
 import {
   AnySignalEnvelope,
@@ -127,6 +135,10 @@ export class RemoteSessionClient {
   private remoteStream: MediaStream | null = null;
   private closed = false;
 
+  // ICE can arrive before the remote description is set; buffer until then.
+  private remoteDescriptionSet = false;
+  private pendingCandidates: RTCIceCandidateInit[] = [];
+
   constructor(options: RemoteSessionOptions) {
     this.sessionId = options.sessionId;
     this.token = options.token;
@@ -134,7 +146,8 @@ export class RemoteSessionClient {
     this.cb = options.callbacks;
   }
 
-  // Establish signaling WS, build the peer connection, and send the offer.
+  // Establish signaling WS and build the peer connection, then wait for the
+  // agent's offer (the console is the answerer).
   start(): void {
     this.setState("signaling");
     this.buildPeerConnection();
@@ -163,17 +176,25 @@ export class RemoteSessionClient {
 
     this.remoteStream = new MediaStream();
 
-    // Console is the offerer that RECEIVES the agent's video. Add a recvonly
-    // video transceiver so the SDP offer advertises a receiver.
-    pc.addTransceiver("video", { direction: "recvonly" });
-
-    // Open the three data channels as the offerer.
-    this.inputChannel = pc.createDataChannel("input", { ordered: true });
-    this.clipboardChannel = pc.createDataChannel("clipboard", { ordered: true });
-    this.fileChannel = pc.createDataChannel("file", { ordered: true });
-
-    this.wireClipboardChannel();
-    this.wireFileChannel();
+    // Answerer: the agent creates the data channels; capture them by label.
+    pc.ondatachannel = (event: RTCDataChannelEvent) => {
+      const dc = event.channel;
+      switch (dc.label) {
+        case "input":
+          this.inputChannel = dc;
+          break;
+        case "clipboard":
+          this.clipboardChannel = dc;
+          this.wireClipboardChannel();
+          break;
+        case "file":
+          this.fileChannel = dc;
+          this.wireFileChannel();
+          break;
+        default:
+          this.log(`ignoring unknown data channel: ${dc.label}`);
+      }
+    };
 
     pc.ontrack = (event: RTCTrackEvent) => {
       const stream = this.remoteStream ?? new MediaStream();
@@ -230,8 +251,7 @@ export class RemoteSessionClient {
     this.ws = ws;
 
     ws.onopen = () => {
-      this.log("signaling socket open");
-      void this.createAndSendOffer();
+      this.log("signaling socket open; awaiting agent offer");
     };
 
     ws.onmessage = (event: MessageEvent<string>) => {
@@ -248,36 +268,57 @@ export class RemoteSessionClient {
     };
   }
 
-  private async createAndSendOffer(): Promise<void> {
+  private async answerOffer(sdp: string): Promise<void> {
     if (!this.pc) return;
     try {
-      const offer = await this.pc.createOffer();
-      await this.pc.setLocalDescription(offer);
+      await this.pc.setRemoteDescription({ type: "offer", sdp });
+      this.remoteDescriptionSet = true;
+      await this.flushPendingCandidates();
+      const answer = await this.pc.createAnswer();
+      await this.pc.setLocalDescription(answer);
       this.sendEnvelope({
-        type: "offer",
+        type: "answer",
         session_id: this.sessionId,
-        payload: { type: "offer", sdp: offer.sdp ?? "" },
+        payload: { type: "answer", sdp: answer.sdp ?? "" },
       });
-      this.log("offer sent");
+      this.log("answer sent");
     } catch (err) {
       this.cb.onError?.(
-        err instanceof Error ? err.message : "Failed to create offer",
+        err instanceof Error ? err.message : "Failed to answer offer",
       );
+    }
+  }
+
+  private async flushPendingCandidates(): Promise<void> {
+    if (!this.pc) return;
+    const pending = this.pendingCandidates;
+    this.pendingCandidates = [];
+    for (const candidate of pending) {
+      try {
+        await this.pc.addIceCandidate(candidate);
+      } catch (err) {
+        this.log(
+          `failed to add buffered ICE candidate: ${
+            err instanceof Error ? err.message : "unknown"
+          }`,
+        );
+      }
     }
   }
 
   private async handleEnvelope(envelope: AnySignalEnvelope): Promise<void> {
     if (!this.pc) return;
     switch (envelope.type) {
-      case "answer": {
-        await this.pc.setRemoteDescription({
-          type: "answer",
-          sdp: envelope.payload.sdp,
-        });
-        this.log("answer applied");
+      case "offer": {
+        await this.answerOffer(envelope.payload.sdp);
         break;
       }
       case "ice-candidate": {
+        // Buffer until the remote description exists, else addIceCandidate throws.
+        if (!this.remoteDescriptionSet) {
+          this.pendingCandidates.push(envelope.payload);
+          break;
+        }
         try {
           await this.pc.addIceCandidate(envelope.payload);
         } catch (err) {
@@ -304,9 +345,9 @@ export class RemoteSessionClient {
         this.cb.onError?.(envelope.payload.message);
         break;
       }
-      case "offer": {
-        // The console is the offerer; a peer offer is unexpected. Ignore.
-        this.log("unexpected offer envelope ignored");
+      case "answer": {
+        // The console is the answerer; a peer answer is unexpected. Ignore.
+        this.log("unexpected answer envelope ignored");
         break;
       }
     }

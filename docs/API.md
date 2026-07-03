@@ -206,6 +206,23 @@ Both sockets exchange newline-free JSON envelopes:
   envelopes to the opposite peer. It drops any envelope whose `session_id` the
   principal is not a party to.
 
+**Offer/answer roles (fixed):** the **agent is the offerer** and the **console
+is the answerer**. The agent owns the screen media and creates the three data
+channels, then sends the `offer` after its banner is acknowledged. The console
+receives the data channels via `ondatachannel`, receives the video via
+`ontrack`, and replies with an `answer`. The relay itself is role-agnostic.
+
+**ICE servers:** the console uses the `ice_servers` returned by `POST /sessions`
+or `POST /attended/join`. In the unattended flow the agent uses its own
+`REMOTE_AGENT_ICE_SERVERS` env value (attended agents use the `ice_servers`
+returned by `/attended/join`). Both point at the same coturn deployment.
+
+**Connection ordering (POC limitation):** the relay forwards an envelope only to
+a currently-connected peer; it does not buffer. The console connects and waits
+as the answerer, and the agent offers only after the banner ack, so in practice
+the console is present first. Buffering an offer for a not-yet-present peer is a
+roadmap item.
+
 ### Data-channel protocol (peer-to-peer, defined here for both ends)
 
 Three labeled `RTCDataChannel`s. All messages are JSON except file chunks.
