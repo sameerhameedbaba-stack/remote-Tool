@@ -1,0 +1,24 @@
+# Rust
+/agent-rust/target/
+**/*.rs.bk
+# Go
+/backend-go/bin/
+/backend-go/tmp/
+# Node / Next.js
+node_modules/
+.next/
+out/
+web-console/.next/
+web-console/node_modules/
+# Env / secrets
+.env
+*.env.local
+!.env.example
+# OS / editor
+.DS_Store
+*.swp
+.idea/
+.vscode/
+# Build artifacts
+dist/
+build/
