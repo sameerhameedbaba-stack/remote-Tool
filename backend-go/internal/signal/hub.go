@@ -1,7 +1,10 @@
 // Package signal is the in-memory WebSocket signaling hub. It binds technician
 // and agent sockets to sessions and relays SDP/ICE/session-control/banner
 // envelopes to the opposite peer, dropping envelopes whose session the sender
-// is not a party to. Media and data channels never traverse this hub.
+// is not a party to. Server→technician envelopes produced before the technician
+// socket connects (e.g. the agent's offer and early ICE) are buffered per
+// session and flushed on connect, so the offer is never lost to the race.
+// Media and data channels never traverse this hub.
 //
 // MVP limitation: the hub is single-instance (see docs/SECURITY_MODEL.md §8).
 package signal
@@ -32,6 +35,15 @@ const (
 // outboundBuffer bounds per-peer queued messages before slow-consumer drop.
 const outboundBuffer = 32
 
+// maxPendingPerSession bounds how many server→technician envelopes are buffered
+// for a session whose technician socket has not connected yet. The agent can
+// produce its offer within milliseconds of session creation — before the
+// technician's signaling socket registers — so without buffering that offer (and
+// any early ICE candidates) would be dropped. Buffering them and flushing on
+// technician connect closes the race. Bounded so a peer that never connects
+// cannot grow memory without limit.
+const maxPendingPerSession = 64
+
 // ControlEnvelope builds a session-control envelope with the given action
 // (start|end|approve).
 func ControlEnvelope(sessionID, action string) Envelope {
@@ -60,9 +72,10 @@ func NewPeer(id string) *Peer {
 // Hub tracks agent and technician peers and the session→device binding.
 type Hub struct {
 	mu       sync.RWMutex
-	agents   map[string]*Peer  // deviceID -> agent socket
-	techs    map[string]*Peer  // sessionID -> technician socket
-	sessions map[string]string // sessionID -> deviceID (party binding)
+	agents   map[string]*Peer    // deviceID -> agent socket
+	techs    map[string]*Peer    // sessionID -> technician socket
+	sessions map[string]string   // sessionID -> deviceID (party binding)
+	pending  map[string][][]byte // sessionID -> envelopes queued for an absent tech
 	log      *slog.Logger
 }
 
@@ -72,8 +85,24 @@ func NewHub(log *slog.Logger) *Hub {
 		agents:   map[string]*Peer{},
 		techs:    map[string]*Peer{},
 		sessions: map[string]string{},
+		pending:  map[string][][]byte{},
 		log:      log,
 	}
+}
+
+// bufferForTech queues a server→technician envelope for a session whose
+// technician socket has not connected yet. Oldest entries are dropped past the
+// per-session cap. The raw slice is copied because callers may reuse it.
+func (h *Hub) bufferForTech(sessionID string, raw []byte) {
+	cp := make([]byte, len(raw))
+	copy(cp, raw)
+	h.mu.Lock()
+	q := h.pending[sessionID]
+	if len(q) >= maxPendingPerSession {
+		q = q[1:]
+	}
+	h.pending[sessionID] = append(q, cp)
+	h.mu.Unlock()
 }
 
 // BindSession records which device a session belongs to. Called on session
@@ -88,6 +117,7 @@ func (h *Hub) BindSession(sessionID, deviceID string) {
 func (h *Hub) UnbindSession(sessionID string) {
 	h.mu.Lock()
 	delete(h.sessions, sessionID)
+	delete(h.pending, sessionID)
 	h.mu.Unlock()
 }
 
@@ -115,7 +145,14 @@ func (h *Hub) RegisterTech(sessionID, deviceID string, p *Peer) {
 	if deviceID != "" {
 		h.sessions[sessionID] = deviceID
 	}
+	pending := h.pending[sessionID]
+	delete(h.pending, sessionID)
 	h.mu.Unlock()
+	// Flush anything the agent produced (offer, early ICE, banner) before this
+	// technician socket existed, in order.
+	for _, raw := range pending {
+		trySend(p, raw, h.log)
+	}
 }
 
 // UnregisterTech detaches a technician socket if it is still the current one.
@@ -170,7 +207,9 @@ func (h *Hub) RouteFromAgent(agentDeviceID string, env Envelope, raw []byte) {
 	tech := h.techs[env.SessionID]
 	h.mu.RUnlock()
 	if tech == nil {
-		h.log.Debug("no tech socket for session", "session_id", env.SessionID)
+		// Technician not connected yet (the agent can offer within ms of session
+		// creation): buffer for delivery when it registers.
+		h.bufferForTech(env.SessionID, raw)
 		return
 	}
 	trySend(tech, raw, h.log)
@@ -196,16 +235,18 @@ func (h *Hub) SendToAgent(deviceID string, env Envelope) bool {
 // SendToTech pushes a server-originated envelope to a session's technician
 // socket. Returns false if the technician is not connected.
 func (h *Hub) SendToTech(sessionID string, env Envelope) bool {
-	h.mu.RLock()
-	tech := h.techs[sessionID]
-	h.mu.RUnlock()
-	if tech == nil {
-		return false
-	}
 	raw, err := json.Marshal(env)
 	if err != nil {
 		h.log.Error("marshal server envelope", "err", err)
 		return false
+	}
+	h.mu.RLock()
+	tech := h.techs[sessionID]
+	h.mu.RUnlock()
+	if tech == nil {
+		// Buffer for the technician socket that will register shortly.
+		h.bufferForTech(sessionID, raw)
+		return true
 	}
 	return trySend(tech, raw, h.log)
 }

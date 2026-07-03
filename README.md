@@ -56,6 +56,19 @@ The end-to-end signaling handshake is defined and each side is unit/contract
 level correct, with the **agent as the WebRTC offerer** and the **console as the
 answerer** (see [`docs/API.md`](docs/API.md) §Signaling).
 
+**Automated tests (all pass; run `bash test/run-all.sh`).** Rust agent unit tests
+(`cargo test`), Go backend unit tests, a Go **integration** suite against real
+Postgres + Redis (every endpoint, auth/authz, single-use codes, rate limits,
+`/agent/events` sanitization, the WebSocket signaling handshake, offer buffering,
+audit), the console production build, a **true end-to-end WebRTC test** (real
+backend + the real Rust agent + a headless-browser peer establishing a live
+peer connection with data channels and asserting the audit events), and a
+**console UI E2E** (Playwright driving login, devices, audit, and the session
+banner). CI runs all of it (`.github/workflows/ci.yml`). See
+[`docs/TEST_PLAN.md`](docs/TEST_PLAN.md) and [`test/README.md`](test/README.md).
+The only things not automated require a Windows host (screen capture, input
+injection, native banner, DPAPI) — see §2/§3.
+
 ## 2. What's stubbed (interfaces present, honestly marked, never faked)
 
 These are the low-level remote-control internals. Each is an explicit `TODO`
@@ -183,9 +196,9 @@ unattended at boot; this is a cfg-gated stub on non-Windows.)
   DTLS-encrypted regardless).
 - **Shared enrollment token.** Anyone with it can enroll a device; rotate it and
   move to per-tenant tokens before scale.
-- **Connection-ordering race (POC).** The relay does not buffer; the console
-  must be connected before the agent offers. Mitigated by the banner-ack delay;
-  buffering is a roadmap item.
+- **Signaling scale.** The signaling hub is single-instance and in-memory
+  (it now buffers the agent's offer for a not-yet-connected console, so the
+  handshake is reliable, but it does not yet cluster across replicas).
 - **Dev token fallback.** The non-Windows `0600` token file is insecure by
   design and must never ship.
 - See [`SECURITY_REVIEW.md`](SECURITY_REVIEW.md) for the reviewed findings.

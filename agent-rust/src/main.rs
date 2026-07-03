@@ -142,7 +142,9 @@ async fn run_service(cfg: Config) -> Result<()> {
         .context("connecting /ws/agent")?;
 
     let ice = ice_servers_from_env();
-    run_session_loop(conn, &cfg, ice, &device_token, "Technician").await
+    // Unattended: keep the socket open and serve successive sessions until the
+    // connection drops.
+    run_session_loop(conn, &cfg, ice, &device_token, "Technician", true).await
 }
 
 // ---------------------------------------------------------------------------
@@ -201,12 +203,14 @@ async fn run_portable(cfg: Config) -> Result<()> {
         .await
         .context("connecting /ws/agent (attended)")?;
 
+    // Attended: a one-shot session; exit when it ends.
     run_session_loop(
         conn,
         &cfg,
         join.ice_servers,
         &join.device_token,
         "Technician",
+        false,
     )
     .await
 }
@@ -220,6 +224,7 @@ async fn run_session_loop(
     ice: Vec<IceServerConfig>,
     device_token: &str,
     technician_label: &str,
+    keep_alive: bool,
 ) -> Result<()> {
     let mut sess: Option<session::Session> = None;
     let mut peer: Option<PeerSession> = None;
@@ -316,11 +321,18 @@ async fn run_session_loop(
                         if let Some(s) = sess.as_mut() {
                             let _ = s.end();
                         }
-                        if let Some(p) = peer.as_ref() {
+                        if let Some(p) = peer.take() {
                             let _ = p.close().await;
                         }
+                        sess = None;
                         _banner_handle = None;
                         tracing::info!(session_id = %env.session_id, "session ended");
+                        if keep_alive {
+                            // Unattended service: keep the socket open and wait
+                            // for the next session (in-flight audit reports also
+                            // complete because the process stays alive).
+                            continue;
+                        }
                         break;
                     }
                     other => tracing::debug!(action = other, "ignoring session-control action"),

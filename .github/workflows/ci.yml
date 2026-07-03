@@ -1,0 +1,115 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+# Cancel superseded runs on the same ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit-build:
+    name: Unit tests + builds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Rust agent — fmt, clippy, test
+        working-directory: agent-rust
+        run: |
+          cargo fmt --check
+          cargo clippy --all-targets -- -D warnings
+          cargo test
+
+      - name: Go backend — build, vet, test
+        working-directory: backend-go
+        env:
+          GOTOOLCHAIN: local
+        run: |
+          go build ./...
+          go vet ./...
+          test -z "$(gofmt -l .)" || (echo "gofmt issues:" && gofmt -l . && exit 1)
+          go test ./...
+
+      - name: Web console — production build
+        working-directory: web-console
+        run: |
+          npm ci
+          npm run build
+
+  integration:
+    name: Backend integration (Postgres + Redis)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: remote
+          POSTGRES_PASSWORD: remote
+          POSTGRES_DB: remote_support
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U remote -d remote_support"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+      - name: Backend integration tests
+        working-directory: backend-go
+        env:
+          GOTOOLCHAIN: local
+          TEST_DATABASE_URL: postgres://remote:remote@localhost:5432/remote_support?sslmode=disable
+          TEST_REDIS_URL: redis://localhost:6379/0
+        run: go test -tags=integration ./internal/integration/...
+
+  e2e:
+    name: End-to-end (real agent + browser)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install Postgres server + Redis
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql redis-server
+
+      - name: Install Playwright Chromium
+        working-directory: test/e2e
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: Install console deps
+        working-directory: web-console
+        run: npm ci
+
+      - name: End-to-end WebRTC test
+        run: bash test/run-e2e.sh
+
+      - name: Console UI E2E
+        run: bash test/run-console-e2e.sh

@@ -1,0 +1,111 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>E2E technician peer</title></head>
+<body>
+<h1>E2E technician peer (answerer)</h1>
+<pre id="log"></pre>
+<script>
+// Minimal WebRTC "technician" peer for the end-to-end test. It mirrors the real
+// console's answerer role (see web-console/lib/webrtc.ts): the agent is the
+// offerer and creates the data channels; this peer answers, receives the
+// channels via ondatachannel, and sends one input / clipboard / file message on
+// them. Test status is exposed on window.__e2e for the Playwright driver.
+
+window.__e2e = {
+  wsOpen: false, offerReceived: false, answered: false,
+  channels: { input: false, clipboard: false, file: false },
+  messagesSent: false, connState: 'new', error: null,
+};
+
+function log(...a) {
+  const el = document.getElementById('log');
+  el.textContent += a.join(' ') + '\n';
+  try { console.log('[peer]', ...a); } catch (e) {}
+}
+
+function b64(str) { return btoa(unescape(encodeURIComponent(str))); }
+
+// Called by the driver AFTER the session exists, so our signaling socket is up
+// well before the agent produces its offer (avoids the no-buffer race).
+window.__connect = function (sessionId, token, wsBase) {
+  try {
+    const pc = new RTCPeerConnection({ iceServers: [] });
+    let remoteSet = false;
+    const pendingIce = [];
+    const chans = {};
+
+    pc.onconnectionstatechange = () => {
+      window.__e2e.connState = pc.connectionState;
+      log('conn', pc.connectionState);
+    };
+
+    pc.oniceconnectionstatechange = () => log('ice', pc.iceConnectionState);
+
+    pc.ondatachannel = (ev) => {
+      const dc = ev.channel;
+      chans[dc.label] = dc;
+      log('ondatachannel', dc.label);
+      dc.onopen = () => {
+        window.__e2e.channels[dc.label] = true;
+        log('open', dc.label);
+        maybeSend();
+      };
+    };
+
+    pc.onicecandidate = (ev) => {
+      if (ev.candidate) {
+        send({ type: 'ice-candidate', session_id: sessionId, payload: ev.candidate.toJSON() });
+      }
+    };
+
+    const ws = new WebSocket(wsBase + '/ws/signal?session_id=' + encodeURIComponent(sessionId) + '&token=' + encodeURIComponent(token));
+    function send(env) { if (ws.readyState === 1) ws.send(JSON.stringify(env)); }
+
+    ws.onopen = () => { window.__e2e.wsOpen = true; log('ws open'); };
+    ws.onerror = (e) => { window.__e2e.error = 'ws error'; log('ws error'); };
+    ws.onmessage = async (msg) => {
+      const env = JSON.parse(msg.data);
+      if (env.type === 'offer') {
+        window.__e2e.offerReceived = true;
+        log('offer received');
+        await pc.setRemoteDescription({ type: 'offer', sdp: env.payload.sdp });
+        remoteSet = true;
+        for (const c of pendingIce) { try { await pc.addIceCandidate(c); } catch (e) {} }
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        send({ type: 'answer', session_id: sessionId, payload: { type: 'answer', sdp: answer.sdp } });
+        window.__e2e.answered = true;
+        log('answer sent');
+      } else if (env.type === 'ice-candidate') {
+        if (!remoteSet) { pendingIce.push(env.payload); }
+        else { try { await pc.addIceCandidate(env.payload); } catch (e) {} }
+      }
+    };
+
+    let sent = false;
+    function maybeSend() {
+      if (sent) return;
+      if (!(chans.input && chans.clipboard && chans.file)) return;
+      if (!(chans.input.readyState === 'open' && chans.clipboard.readyState === 'open' && chans.file.readyState === 'open')) return;
+      sent = true;
+      // 1) input: a valid, allowlisted key event.
+      chans.input.send(JSON.stringify({ t: 'key', code: 'KeyA', action: 'down', modifiers: ['ctrl'] }));
+      // 2) clipboard: text to the agent.
+      chans.clipboard.send(JSON.stringify({ t: 'clipboard', direction: 'to-agent', text: 'e2e-clip' }));
+      // 3) file: offer + one chunk + complete.
+      const id = 'e2e-file-1';
+      const payload = 'hello world';
+      chans.file.send(JSON.stringify({ t: 'file-offer', id, name: 'e2e.txt', size: payload.length, direction: 'to-agent' }));
+      chans.file.send(JSON.stringify({ t: 'file-chunk', id, seq: 0, data: b64(payload) }));
+      chans.file.send(JSON.stringify({ t: 'file-complete', id }));
+      window.__e2e.messagesSent = true;
+      log('messages sent on all 3 channels');
+    }
+  } catch (e) {
+    window.__e2e.error = String(e);
+    log('exception', String(e));
+  }
+};
+</script>
+</body>
+</html>

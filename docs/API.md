@@ -241,11 +241,11 @@ or `POST /attended/join`. In the unattended flow the agent uses its own
 `REMOTE_AGENT_ICE_SERVERS` env value (attended agents use the `ice_servers`
 returned by `/attended/join`). Both point at the same coturn deployment.
 
-**Connection ordering (POC limitation):** the relay forwards an envelope only to
-a currently-connected peer; it does not buffer. The console connects and waits
-as the answerer, and the agent offers only after the banner ack, so in practice
-the console is present first. Buffering an offer for a not-yet-present peer is a
-roadmap item.
+**Connection ordering:** the agent can produce its offer within milliseconds of
+session creation — before the technician's signaling socket registers. The relay
+therefore **buffers** server→technician envelopes (offer, early ICE, banner) per
+session when no technician is connected, and flushes them in order on connect, so
+the offer is never lost to the race. The buffer is bounded per session.
 
 ### Data-channel protocol (peer-to-peer, defined here for both ends)
 

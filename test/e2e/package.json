@@ -1,0 +1,10 @@
+{
+  "name": "remote-support-e2e",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "End-to-end tests: real backend + real Rust agent + headless-browser technician peer.",
+  "dependencies": {
+    "playwright": "1.61.1"
+  }
+}
