@@ -1,38 +1,49 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
+import {
+  MonitorSmartphone,
+  Radio,
+  WifiOff,
+  KeyRound,
+  Copy,
+  Check,
+  Plug,
+  ArrowRight,
+  Search,
+} from "lucide-react";
 import { RequireAuth, useAuth } from "@/lib/auth";
 import {
   ApiError,
   createAttendedCode,
+  createSession,
   listDevices,
   listSessions,
   type AttendedCodeResponse,
   type Device,
   type Session,
 } from "@/lib/api";
-import { SessionBadge, formatTime, useCountdown } from "@/components/ui";
+import {
+  Button,
+  Card,
+  Field,
+  Input,
+  MetricCard,
+  SectionHeading,
+  EmptyState,
+  LoadingState,
+  PresenceBadge,
+  SessionBadge,
+  useCountdown,
+  timeAgo,
+  formatTime,
+} from "@/components/ui";
+import { OsIcon, osLabel } from "@/components/domain/os";
+import { cn } from "@/lib/cn";
 
-function StatCard({
-  label,
-  value,
-  hint,
-}: {
-  label: string;
-  value: string | number;
-  hint?: string;
-}) {
-  return (
-    <div className="card">
-      <div className="text-sm font-medium text-slate-400">{label}</div>
-      <div className="mt-2 text-3xl font-semibold text-white">{value}</div>
-      {hint && <div className="mt-1 text-xs text-slate-500">{hint}</div>}
-    </div>
-  );
-}
-
-function AttendedCodePanel({
+function AttendedCodeCard({
   code,
   onClear,
 }: {
@@ -40,39 +51,62 @@ function AttendedCodePanel({
   onClear: () => void;
 }) {
   const { label, expired } = useCountdown(code.expires_at);
+  const [copied, setCopied] = useState(false);
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(code.code);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      /* ignore */
+    }
+  };
   return (
-    <div className="card border-accent-500/40 bg-accent-500/5">
-      <div className="flex items-start justify-between">
-        <div>
-          <h3 className="text-sm font-medium text-slate-300">
-            One-time attended code
-          </h3>
-          <p className="mt-1 text-xs text-slate-500">
-            Read this code to the end user. It is single-use and expires.
-          </p>
-        </div>
-        <button onClick={onClear} className="btn-secondary text-xs">
+    <div className="mt-4 rounded-xl border border-accent/30 bg-accent-soft/40 p-4">
+      <div className="flex items-center justify-between">
+        <span className="text-[12px] font-medium text-fg-secondary">
+          Read this code to the end user
+        </span>
+        <button
+          onClick={onClear}
+          className="text-[12px] text-fg-muted hover:text-fg"
+        >
           Dismiss
         </button>
       </div>
-      <div className="mt-4 flex items-end justify-between gap-4">
+      <div className="mt-3 flex items-center justify-between gap-4">
         <div
-          className="font-mono text-4xl font-bold tracking-[0.2em] text-white"
+          className="font-mono text-3xl font-semibold tracking-[0.15em] text-fg"
           aria-label={`Attended code ${code.code}`}
         >
           {code.code}
         </div>
-        <div className="text-right">
-          <div
-            className={`text-2xl font-semibold tabular-nums ${
-              expired ? "text-red-400" : "text-accent-400"
-            }`}
+        <div className="flex items-center gap-3">
+          <div className="text-right">
+            <div
+              className={cn(
+                "text-lg font-semibold tabular-nums",
+                expired ? "text-danger" : "text-accent",
+              )}
+            >
+              {expired ? "Expired" : label}
+            </div>
+            <div className="text-[11px] text-fg-muted">single-use · expires</div>
+          </div>
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={copy}
+            icon={
+              copied ? (
+                <Check className="h-4 w-4 text-success" aria-hidden />
+              ) : (
+                <Copy className="h-4 w-4" aria-hidden />
+              )
+            }
           >
-            {expired ? "Expired" : label}
-          </div>
-          <div className="text-xs text-slate-500">
-            expires {formatTime(code.expires_at)}
-          </div>
+            {copied ? "Copied" : "Copy"}
+          </Button>
         </div>
       </div>
     </div>
@@ -81,6 +115,8 @@ function AttendedCodePanel({
 
 function DashboardContent() {
   const { token } = useAuth();
+  const router = useRouter();
+  const search = useSearchParams();
   const [devices, setDevices] = useState<Device[]>([]);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [loading, setLoading] = useState(true);
@@ -91,6 +127,8 @@ function DashboardContent() {
   );
   const [creatingCode, setCreatingCode] = useState(false);
   const [label, setLabel] = useState("");
+  const [connectingId, setConnectingId] = useState<string | null>(null);
+  const labelRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(
     async (signal?: AbortSignal) => {
@@ -98,7 +136,7 @@ function DashboardContent() {
       try {
         const [devRes, sesRes] = await Promise.all([
           listDevices(token, {}, signal),
-          listSessions(token, { limit: 5 }, signal),
+          listSessions(token, { limit: 8 }, signal),
         ]);
         setDevices(devRes.devices);
         setSessions(sesRes.sessions);
@@ -116,15 +154,27 @@ function DashboardContent() {
   useEffect(() => {
     const controller = new AbortController();
     void load(controller.signal);
-    return () => controller.abort();
+    const id = setInterval(() => void load(), 10_000);
+    return () => {
+      controller.abort();
+      clearInterval(id);
+    };
   }, [load]);
+
+  // Palette "Start attended session" deep-link focuses the label field.
+  useEffect(() => {
+    if (search.get("attended") === "1") labelRef.current?.focus();
+  }, [search]);
 
   const onCreateCode = async () => {
     if (!token) return;
     setCreatingCode(true);
     setError(null);
     try {
-      const res = await createAttendedCode(token, label.trim() || "Attended session");
+      const res = await createAttendedCode(
+        token,
+        label.trim() || "Attended session",
+      );
       setAttendedCode(res);
       setLabel("");
     } catch (err) {
@@ -134,118 +184,236 @@ function DashboardContent() {
     }
   };
 
-  const onlineCount = devices.filter((d) => d.status === "online").length;
-  const activeSessions = sessions.filter((s) => s.status === "active").length;
+  const connect = async (device: Device) => {
+    if (!token) return;
+    setConnectingId(device.id);
+    try {
+      const res = await createSession(token, device.id);
+      try {
+        sessionStorage.setItem(
+          `rs_ice:${res.session.id}`,
+          JSON.stringify(res.ice_servers),
+        );
+      } catch {
+        /* ignore */
+      }
+      router.push(`/sessions/${res.session.id}`);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Failed to start session");
+      setConnectingId(null);
+    }
+  };
+
+  const onlineDevices = devices.filter((d) => d.status === "online");
+  const activeSessions = sessions.filter((s) => s.status === "active");
+  const openCommand = () =>
+    window.dispatchEvent(new Event("rs:open-command"));
 
   return (
-    <div className="mx-auto max-w-7xl px-4 py-8">
-      <div className="mb-6 flex items-center justify-between">
+    <div className="mx-auto w-full max-w-[1400px] px-6 py-7">
+      {/* Header */}
+      <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-semibold text-white">Dashboard</h1>
-          <p className="text-sm text-slate-400">
-            Overview of your fleet and support sessions
+          <h1 className="text-2xl font-semibold tracking-tight text-fg">
+            Dashboard
+          </h1>
+          <p className="mt-1 text-[13px] text-fg-muted">
+            Your fleet at a glance — connect, monitor, and support.
           </p>
         </div>
+        <Button
+          variant="primary"
+          onClick={openCommand}
+          icon={<Search className="h-4 w-4" aria-hidden />}
+        >
+          Connect a device
+        </Button>
+      </div>
+
+      {/* Metrics */}
+      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+        <MetricCard
+          label="Devices online"
+          value={loading ? "—" : onlineDevices.length}
+          tone="success"
+          icon={<MonitorSmartphone className="h-5 w-5" aria-hidden />}
+          hint={`${devices.length} registered`}
+        />
+        <MetricCard
+          label="Active sessions"
+          value={loading ? "—" : activeSessions.length}
+          tone={activeSessions.length > 0 ? "accent" : "neutral"}
+          icon={<Radio className="h-5 w-5" aria-hidden />}
+          hint="live now"
+        />
+        <MetricCard
+          label="Offline"
+          value={loading ? "—" : devices.length - onlineDevices.length}
+          tone="neutral"
+          icon={<WifiOff className="h-5 w-5" aria-hidden />}
+        />
+        <MetricCard
+          label="Recent sessions"
+          value={loading ? "—" : sessions.length}
+          tone="info"
+          icon={<Plug className="h-5 w-5" aria-hidden />}
+          hint="last 8"
+        />
       </div>
 
       {error && (
         <div
           role="alert"
-          className="mb-6 rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-300"
+          className="mt-4 rounded-lg border border-danger/30 bg-danger-soft px-3 py-2 text-[13px] text-danger"
         >
           {error}
         </div>
       )}
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <StatCard
-          label="Devices online"
-          value={loading ? "…" : onlineCount}
-          hint={`${devices.length} total registered`}
-        />
-        <StatCard
-          label="Active sessions"
-          value={loading ? "…" : activeSessions}
-        />
-        <StatCard
-          label="Recent sessions"
-          value={loading ? "…" : sessions.length}
-          hint="most recent 5"
-        />
-        <StatCard
-          label="Offline devices"
-          value={loading ? "…" : devices.length - onlineCount}
-        />
+      <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-3">
+        {/* Attended session start */}
+        <Card className="lg:col-span-1 p-5">
+          <SectionHeading
+            title="Start attended session"
+            description="Generate a one-time code for a user running the portable agent."
+          />
+          <div className="mt-4">
+            <Field label="Session label" htmlFor="attended-label">
+              <div className="flex gap-2">
+                <Input
+                  id="attended-label"
+                  ref={labelRef}
+                  aria-label="Session label"
+                  placeholder="e.g. Jane's laptop"
+                  value={label}
+                  onChange={(e) => setLabel(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && onCreateCode()}
+                />
+                <Button
+                  variant="primary"
+                  onClick={onCreateCode}
+                  loading={creatingCode}
+                  icon={
+                    !creatingCode && <KeyRound className="h-4 w-4" aria-hidden />
+                  }
+                  className="whitespace-nowrap"
+                >
+                  Create code
+                </Button>
+              </div>
+            </Field>
+          </div>
+          {attendedCode && (
+            <AttendedCodeCard
+              code={attendedCode}
+              onClear={() => setAttendedCode(null)}
+            />
+          )}
+        </Card>
+
+        {/* Online devices quick connect */}
+        <Card className="lg:col-span-2 p-0">
+          <div className="flex items-center justify-between px-5 pt-5">
+            <SectionHeading
+              title="Online devices"
+              description="One-click unattended connect."
+            />
+            <Link
+              href="/devices"
+              className="flex items-center gap-1 text-[13px] font-medium text-accent hover:underline"
+            >
+              All devices <ArrowRight className="h-3.5 w-3.5" aria-hidden />
+            </Link>
+          </div>
+          <div className="mt-3">
+            {loading ? (
+              <LoadingState rows={3} />
+            ) : onlineDevices.length === 0 ? (
+              <EmptyState
+                icon={<WifiOff className="h-5 w-5" aria-hidden />}
+                title="No devices online"
+                description="Devices appear here when their agent is connected."
+              />
+            ) : (
+              <ul className="divide-y divide-line">
+                {onlineDevices.slice(0, 5).map((d) => (
+                  <li
+                    key={d.id}
+                    className="flex items-center gap-3 px-5 py-3 transition-colors hover:bg-surface-hover"
+                  >
+                    <OsIcon os={d.os} className="h-4 w-4 text-fg-muted" />
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-sm font-medium text-fg">
+                        {d.name}
+                      </div>
+                      <div className="truncate text-[12px] text-fg-muted">
+                        {d.hostname} · {osLabel(d.os)} · seen {timeAgo(d.last_seen_at)}
+                      </div>
+                    </div>
+                    <PresenceBadge status={d.status} size="sm" />
+                    <Button
+                      size="sm"
+                      variant="primary"
+                      loading={connectingId === d.id}
+                      onClick={() => void connect(d)}
+                      icon={
+                        connectingId !== d.id && (
+                          <Plug className="h-3.5 w-3.5" aria-hidden />
+                        )
+                      }
+                    >
+                      Connect
+                    </Button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </Card>
       </div>
 
-      <div className="mt-8 grid grid-cols-1 gap-6 lg:grid-cols-2">
-        {/* Start attended session */}
-        <div className="card">
-          <h2 className="text-lg font-semibold text-white">
-            Start attended session
-          </h2>
-          <p className="mt-1 text-sm text-slate-400">
-            Generate a one-time code for a user running the portable agent.
-          </p>
-          <div className="mt-4 flex gap-2">
-            <input
-              className="input"
-              placeholder="Label (e.g. Jane's laptop)"
-              value={label}
-              onChange={(e) => setLabel(e.target.value)}
-              aria-label="Session label"
-            />
-            <button
-              onClick={onCreateCode}
-              className="btn-primary whitespace-nowrap"
-              disabled={creatingCode}
-            >
-              {creatingCode ? "Creating…" : "Create code"}
-            </button>
-          </div>
-
-          {attendedCode && (
-            <div className="mt-4">
-              <AttendedCodePanel
-                code={attendedCode}
-                onClear={() => setAttendedCode(null)}
-              />
-            </div>
-          )}
+      {/* Recent sessions */}
+      <Card className="mt-6 p-0">
+        <div className="px-5 pt-5">
+          <SectionHeading
+            title="Recent sessions"
+            description="Latest support activity across your organization."
+          />
         </div>
-
-        {/* Recent sessions */}
-        <div className="card">
-          <h2 className="text-lg font-semibold text-white">Recent sessions</h2>
-          <div className="mt-4 divide-y divide-surface-700">
-            {loading ? (
-              <p className="py-4 text-sm text-slate-500">Loading…</p>
-            ) : sessions.length === 0 ? (
-              <p className="py-4 text-sm text-slate-500">No sessions yet.</p>
-            ) : (
-              sessions.map((s) => (
-                <div
+        <div className="mt-3">
+          {loading ? (
+            <LoadingState rows={3} />
+          ) : sessions.length === 0 ? (
+            <EmptyState
+              icon={<Radio className="h-5 w-5" aria-hidden />}
+              title="No sessions yet"
+              description="Start a session from a device or an attended code to see it here."
+            />
+          ) : (
+            <ul className="divide-y divide-line">
+              {sessions.map((s) => (
+                <li
                   key={s.id}
-                  className="flex items-center justify-between py-3"
+                  className="flex items-center gap-3 px-5 py-3 transition-colors hover:bg-surface-hover"
                 >
-                  <div className="min-w-0">
+                  <div className="min-w-0 flex-1">
                     <Link
                       href={`/sessions/${s.id}`}
-                      className="font-mono text-sm text-accent-400 hover:underline"
+                      className="font-mono text-[13px] font-medium text-accent hover:underline"
                     >
                       {s.id.slice(0, 8)}
                     </Link>
-                    <div className="text-xs text-slate-500">
+                    <div className="text-[12px] text-fg-muted">
                       {s.type} · {formatTime(s.created_at)}
                     </div>
                   </div>
                   <SessionBadge status={s.status} />
-                </div>
-              ))
-            )}
-          </div>
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
-      </div>
+      </Card>
     </div>
   );
 }
@@ -253,7 +421,9 @@ function DashboardContent() {
 export default function DashboardPage() {
   return (
     <RequireAuth>
-      <DashboardContent />
+      <Suspense fallback={<LoadingState className="min-h-[60vh]" />}>
+        <DashboardContent />
+      </Suspense>
     </RequireAuth>
   );
 }

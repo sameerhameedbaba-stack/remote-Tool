@@ -1,7 +1,17 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import {
+  Search,
+  Star,
+  Plug,
+  ChevronRight,
+  MonitorSmartphone,
+  Rows3,
+  LayoutGrid,
+  RotateCw,
+} from "lucide-react";
 import { RequireAuth, useAuth } from "@/lib/auth";
 import {
   ApiError,
@@ -9,25 +19,63 @@ import {
   listDevices,
   type Device,
 } from "@/lib/api";
-import { PresenceBadge, timeAgo } from "@/components/ui";
+import {
+  Button,
+  IconButton,
+  Card,
+  Input,
+  Tabs,
+  Tooltip,
+  PresenceBadge,
+  ModeBadge,
+  EmptyState,
+  LoadingState,
+  ErrorState,
+  timeAgo,
+} from "@/components/ui";
+import { OsIcon, osLabel } from "@/components/domain/os";
+import { DeviceDetailDrawer } from "@/components/domain/DeviceDetailDrawer";
+import { useFavorites } from "@/lib/favorites";
+import { cn } from "@/lib/cn";
 
-const PRESENCE_POLL_MS = 10_000;
+type Filter =
+  | "all"
+  | "online"
+  | "offline"
+  | "favorites"
+  | "windows"
+  | "macos"
+  | "linux";
+
+const FILTERS: { id: Filter; label: string }[] = [
+  { id: "all", label: "All" },
+  { id: "online", label: "Online" },
+  { id: "offline", label: "Offline" },
+  { id: "favorites", label: "Favorites" },
+  { id: "windows", label: "Windows" },
+  { id: "macos", label: "macOS" },
+  { id: "linux", label: "Linux" },
+];
 
 function DevicesContent() {
   const { token } = useAuth();
   const router = useRouter();
+  const { isFavorite, toggle } = useFavorites();
 
   const [devices, setDevices] = useState<Device[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState<Filter>("all");
+  const [view, setView] = useState<"table" | "cards">("table");
   const [connectingId, setConnectingId] = useState<string | null>(null);
+  const [detail, setDetail] = useState<Device | null>(null);
 
   const load = useCallback(
-    async (signal?: AbortSignal) => {
+    async (q: string, signal?: AbortSignal) => {
       if (!token) return;
       try {
-        const res = await listDevices(token, {}, signal);
+        const res = await listDevices(token, { q: q || undefined }, signal);
         setDevices(res.devices);
         setError(null);
       } catch (err) {
@@ -40,166 +88,304 @@ function DevicesContent() {
     [token],
   );
 
-  // Initial load + presence polling.
+  // Debounced server-side search + presence polling.
   useEffect(() => {
-    const controller = new AbortController();
-    void load(controller.signal);
-    const id = setInterval(() => void load(), PRESENCE_POLL_MS);
+    const ctl = new AbortController();
+    const t = setTimeout(() => void load(query, ctl.signal), 200);
     return () => {
-      controller.abort();
-      clearInterval(id);
+      clearTimeout(t);
+      ctl.abort();
     };
-  }, [load]);
+  }, [query, load]);
 
-  const onConnect = async (device: Device) => {
+  useEffect(() => {
+    const id = setInterval(() => void load(query), 10_000);
+    return () => clearInterval(id);
+  }, [load, query]);
+
+  const filtered = useMemo(() => {
+    return devices.filter((d) => {
+      switch (filter) {
+        case "online":
+          return d.status === "online";
+        case "offline":
+          return d.status === "offline";
+        case "favorites":
+          return isFavorite(d.id);
+        case "windows":
+        case "macos":
+        case "linux":
+          return d.os === filter;
+        default:
+          return true;
+      }
+    });
+  }, [devices, filter, isFavorite]);
+
+  const connect = async (device: Device) => {
     if (!token) return;
     setConnectingId(device.id);
-    setError(null);
     try {
       const res = await createSession(token, device.id);
-      // Stash the ICE servers for the session page. GET /sessions/{id} does not
-      // return ICE servers (per docs/API.md), so we carry them across the
-      // client-side navigation via sessionStorage (survives a reload too).
       try {
         sessionStorage.setItem(
           `rs_ice:${res.session.id}`,
           JSON.stringify(res.ice_servers),
         );
       } catch {
-        /* storage may be unavailable; the session page falls back gracefully */
+        /* ignore */
       }
       router.push(`/sessions/${res.session.id}`);
     } catch (err) {
-      setError(
-        err instanceof ApiError
-          ? err.message
-          : "Failed to start session",
-      );
+      setError(err instanceof ApiError ? err.message : "Failed to start session");
       setConnectingId(null);
     }
   };
 
-  const filtered = devices.filter((d) => {
-    if (!query.trim()) return true;
-    const q = query.toLowerCase();
-    return (
-      d.name.toLowerCase().includes(q) ||
-      d.hostname.toLowerCase().includes(q)
-    );
-  });
+  const onlineCount = devices.filter((d) => d.status === "online").length;
+
+  const FavStar = ({ id }: { id: string }) => (
+    <IconButton
+      label={isFavorite(id) ? "Remove favorite" : "Add favorite"}
+      size="sm"
+      variant="ghost"
+      onClick={(e) => {
+        e.stopPropagation();
+        toggle(id);
+      }}
+    >
+      <Star
+        className={cn(
+          "h-4 w-4",
+          isFavorite(id) ? "fill-warning text-warning" : "text-fg-muted",
+        )}
+        aria-hidden
+      />
+    </IconButton>
+  );
 
   return (
-    <div className="mx-auto max-w-7xl px-4 py-8">
-      <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
+    <div className="mx-auto w-full max-w-[1400px] px-6 py-7">
+      <div className="mb-5 flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-semibold text-white">Devices</h1>
-          <p className="text-sm text-slate-400">
-            Registered endpoints and live presence
+          <h1 className="text-2xl font-semibold tracking-tight text-fg">
+            Devices
+          </h1>
+          <p className="mt-1 text-[13px] text-fg-muted">
+            {devices.length} registered · {onlineCount} online
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          <input
-            className="input w-56"
-            placeholder="Search name or hostname"
+      </div>
+
+      {/* Toolbar */}
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="relative min-w-[220px] flex-1">
+          <Search
+            className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-fg-muted"
+            aria-hidden
+          />
+          <Input
+            aria-label="Search devices"
+            placeholder="Search by name or hostname…"
+            className="pl-9"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            aria-label="Search devices"
           />
-          <button
-            onClick={() => void load()}
-            className="btn-secondary"
-            aria-label="Refresh"
-          >
-            Refresh
-          </button>
         </div>
+        <Tabs
+          items={[
+            { id: "table", label: "Table", icon: <Rows3 className="h-3.5 w-3.5" /> },
+            { id: "cards", label: "Cards", icon: <LayoutGrid className="h-3.5 w-3.5" /> },
+          ]}
+          active={view}
+          onChange={(v) => setView(v as "table" | "cards")}
+          size="sm"
+        />
+        <Tooltip label="Refresh">
+          <IconButton
+            label="Refresh devices"
+            variant="secondary"
+            onClick={() => void load(query)}
+          >
+            <RotateCw className="h-4 w-4" aria-hidden />
+          </IconButton>
+        </Tooltip>
       </div>
 
-      {error && (
-        <div
-          role="alert"
-          className="mb-6 rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-300"
-        >
-          {error}
-        </div>
-      )}
+      {/* Filter chips */}
+      <div className="mt-3 flex flex-wrap items-center gap-1.5">
+        {FILTERS.map((f) => (
+          <button
+            key={f.id}
+            onClick={() => setFilter(f.id)}
+            className={cn(
+              "rounded-full border px-3 py-1 text-[12px] font-medium transition-colors",
+              filter === f.id
+                ? "border-accent bg-accent-soft text-accent"
+                : "border-line bg-surface text-fg-secondary hover:border-line-soft hover:text-fg",
+            )}
+          >
+            {f.label}
+          </button>
+        ))}
+      </div>
 
-      <div className="overflow-hidden rounded-lg border border-surface-700">
-        <div className="overflow-x-auto">
-          <table className="min-w-full divide-y divide-surface-700 text-sm">
-            <thead className="bg-surface-850 text-left text-xs uppercase tracking-wide text-slate-400">
-              <tr>
-                <th className="px-4 py-3 font-medium">Name</th>
-                <th className="px-4 py-3 font-medium">Hostname</th>
-                <th className="px-4 py-3 font-medium">OS</th>
-                <th className="px-4 py-3 font-medium">Mode</th>
-                <th className="px-4 py-3 font-medium">Status</th>
-                <th className="px-4 py-3 font-medium">Last seen</th>
-                <th className="px-4 py-3 font-medium text-right">Action</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-surface-800 bg-surface-900">
-              {loading ? (
-                <tr>
-                  <td colSpan={7} className="px-4 py-8 text-center text-slate-500">
-                    Loading devices…
-                  </td>
+      {/* Content */}
+      <Card className="mt-4 p-0">
+        {loading ? (
+          <LoadingState rows={6} />
+        ) : error ? (
+          <ErrorState message={error} onRetry={() => void load(query)} />
+        ) : filtered.length === 0 ? (
+          <EmptyState
+            icon={<MonitorSmartphone className="h-5 w-5" aria-hidden />}
+            title={query ? "No matching devices" : "No devices yet"}
+            description={
+              query
+                ? "Try a different search term or clear the filters."
+                : "Enrolled agents appear here. Register an unattended device to get started."
+            }
+          />
+        ) : view === "table" ? (
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-sm">
+              <thead>
+                <tr className="border-b border-line text-left text-[11px] uppercase tracking-wider text-fg-muted">
+                  <th className="w-10 px-3 py-2.5" />
+                  <th className="px-3 py-2.5 font-medium">Device</th>
+                  <th className="px-3 py-2.5 font-medium">Status</th>
+                  <th className="px-3 py-2.5 font-medium">Access</th>
+                  <th className="px-3 py-2.5 font-medium">Last seen</th>
+                  <th className="px-3 py-2.5 text-right font-medium">Actions</th>
                 </tr>
-              ) : filtered.length === 0 ? (
-                <tr>
-                  <td colSpan={7} className="px-4 py-8 text-center text-slate-500">
-                    No devices found.
-                  </td>
-                </tr>
-              ) : (
-                filtered.map((device) => {
-                  const canConnect =
-                    device.status === "online" &&
-                    device.mode === "unattended";
-                  return (
-                    <tr key={device.id} className="hover:bg-surface-850">
-                      <td className="px-4 py-3 font-medium text-slate-100">
-                        {device.name}
-                      </td>
-                      <td className="px-4 py-3 font-mono text-xs text-slate-400">
-                        {device.hostname}
-                      </td>
-                      <td className="px-4 py-3 capitalize text-slate-300">
-                        {device.os}
-                      </td>
-                      <td className="px-4 py-3 capitalize text-slate-300">
-                        {device.mode}
-                      </td>
-                      <td className="px-4 py-3">
-                        <PresenceBadge status={device.status} />
-                      </td>
-                      <td className="px-4 py-3 text-slate-400">
-                        {timeAgo(device.last_seen_at)}
-                      </td>
-                      <td className="px-4 py-3 text-right">
-                        <button
-                          onClick={() => void onConnect(device)}
-                          className="btn-primary text-xs disabled:opacity-40"
-                          disabled={!canConnect || connectingId === device.id}
-                          title={
-                            canConnect
-                              ? "Start an unattended session"
-                              : "Only online unattended devices can be connected"
+              </thead>
+              <tbody className="divide-y divide-line">
+                {filtered.map((d) => (
+                  <tr
+                    key={d.id}
+                    onClick={() => setDetail(d)}
+                    className="cursor-pointer transition-colors hover:bg-surface-hover"
+                  >
+                    <td className="px-3 py-2.5" onClick={(e) => e.stopPropagation()}>
+                      <FavStar id={d.id} />
+                    </td>
+                    <td className="px-3 py-2.5">
+                      <div className="flex items-center gap-3">
+                        <OsIcon os={d.os} className="h-4 w-4 shrink-0 text-fg-muted" />
+                        <div className="min-w-0">
+                          <div className="truncate font-medium text-fg">
+                            {d.name}
+                          </div>
+                          <div className="truncate text-[12px] text-fg-muted">
+                            {d.hostname} · {osLabel(d.os)}
+                          </div>
+                        </div>
+                      </div>
+                    </td>
+                    <td className="px-3 py-2.5">
+                      <PresenceBadge status={d.status} size="sm" />
+                    </td>
+                    <td className="px-3 py-2.5">
+                      <ModeBadge mode={d.mode} />
+                    </td>
+                    <td className="whitespace-nowrap px-3 py-2.5 text-[13px] text-fg-secondary">
+                      {timeAgo(d.last_seen_at)}
+                    </td>
+                    <td className="px-3 py-2.5" onClick={(e) => e.stopPropagation()}>
+                      <div className="flex items-center justify-end gap-1">
+                        <Button
+                          size="sm"
+                          variant={d.status === "online" ? "primary" : "secondary"}
+                          disabled={d.status !== "online"}
+                          loading={connectingId === d.id}
+                          onClick={() => void connect(d)}
+                          icon={
+                            connectingId !== d.id && (
+                              <Plug className="h-3.5 w-3.5" aria-hidden />
+                            )
                           }
                         >
-                          {connectingId === device.id
-                            ? "Connecting…"
-                            : "Connect"}
-                        </button>
-                      </td>
-                    </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
+                          Connect
+                        </Button>
+                        <IconButton
+                          label="Device details"
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => setDetail(d)}
+                        >
+                          <ChevronRight className="h-4 w-4" aria-hidden />
+                        </IconButton>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 gap-3 p-3 sm:grid-cols-2 xl:grid-cols-3">
+            {filtered.map((d) => (
+              <div
+                key={d.id}
+                onClick={() => setDetail(d)}
+                className="cursor-pointer rounded-xl border border-line bg-surface p-4 transition-all hover:border-line-soft hover:shadow-elev-2"
+              >
+                <div className="flex items-start justify-between">
+                  <div className="flex items-center gap-2.5">
+                    <div className="grid h-9 w-9 place-items-center rounded-lg border border-line-soft bg-surface-card text-fg-secondary">
+                      <OsIcon os={d.os} className="h-4 w-4" />
+                    </div>
+                    <div className="min-w-0">
+                      <div className="truncate text-sm font-semibold text-fg">
+                        {d.name}
+                      </div>
+                      <div className="truncate text-[12px] text-fg-muted">
+                        {d.hostname}
+                      </div>
+                    </div>
+                  </div>
+                  <div onClick={(e) => e.stopPropagation()}>
+                    <FavStar id={d.id} />
+                  </div>
+                </div>
+                <div className="mt-3 flex items-center gap-1.5">
+                  <PresenceBadge status={d.status} size="sm" />
+                  <ModeBadge mode={d.mode} />
+                </div>
+                <div className="mt-3 flex items-center justify-between">
+                  <span className="text-[12px] text-fg-muted">
+                    seen {timeAgo(d.last_seen_at)}
+                  </span>
+                  <div onClick={(e) => e.stopPropagation()}>
+                    <Button
+                      size="sm"
+                      variant={d.status === "online" ? "primary" : "secondary"}
+                      disabled={d.status !== "online"}
+                      loading={connectingId === d.id}
+                      onClick={() => void connect(d)}
+                      icon={
+                        connectingId !== d.id && (
+                          <Plug className="h-3.5 w-3.5" aria-hidden />
+                        )
+                      }
+                    >
+                      Connect
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+
+      <DeviceDetailDrawer
+        device={detail}
+        open={!!detail}
+        onClose={() => setDetail(null)}
+        onConnect={(d) => void connect(d)}
+        connecting={connectingId === detail?.id}
+      />
     </div>
   );
 }

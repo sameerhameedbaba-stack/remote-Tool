@@ -82,11 +82,11 @@ async function main() {
 
   await step('audit page shows recorded events', async () => {
     await page.goto(CONSOLE_URL + '/audit');
-    // A .badge cell only renders once real event rows have loaded.
-    await page.waitForSelector('table tbody .badge');
+    await page.waitForSelector('[data-testid="audit-row"]');
     const body = (await page.textContent('body')) || '';
-    if (!/(auth\.login|device\.register|session\.(request|start|end|approve))/.test(body)) {
-      throw new Error('audit page shows no expected event types');
+    // Human-readable event labels rendered by the redesigned audit timeline.
+    if (!/(Signed in|Device registered|Session (requested|started|ended)|Consent approved)/.test(body)) {
+      throw new Error('audit page shows no expected event labels');
     }
   });
 
@@ -94,6 +94,42 @@ async function main() {
     await page.goto(CONSOLE_URL + '/sessions/' + SESSION_ID);
     await page.waitForSelector('text=REMOTE SESSION ACTIVE');
   });
+
+  // Optional: capture screenshots of each redesigned page for visual review.
+  const shotsDir = process.env.E2E_SHOTS_DIR;
+  if (shotsDir) {
+    const fsmod = await import('node:fs');
+    fsmod.mkdirSync(shotsDir, { recursive: true });
+    const shot = async (name, url, waitFor) => {
+      await page.goto(CONSOLE_URL + url);
+      if (waitFor) await page.waitForSelector(waitFor).catch(() => {});
+      await page.waitForTimeout(700);
+      await page.screenshot({ path: `${shotsDir}/${name}.png`, fullPage: false });
+      console.log(`[console-e2e] shot: ${name}`);
+    };
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await shot('dashboard', '/dashboard', 'h1');
+    await shot('devices', '/devices', 'table');
+    await shot('audit', '/audit', '[data-testid="audit-row"]');
+    await shot('session', '/sessions/' + SESSION_ID, 'text=REMOTE SESSION ACTIVE');
+    await shot('settings', '/admin/settings', 'h1');
+    // Light mode dashboard.
+    await page.goto(CONSOLE_URL + '/dashboard');
+    await page.evaluate(() => {
+      localStorage.setItem('rs-theme', 'light');
+      document.documentElement.setAttribute('data-theme', 'light');
+    });
+    await page.waitForTimeout(500);
+    await page.screenshot({ path: `${shotsDir}/dashboard-light.png` });
+    console.log('[console-e2e] shot: dashboard-light');
+    // Login (sign out first).
+    await page.goto(CONSOLE_URL + '/login');
+    await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'));
+    await page.waitForSelector('#email');
+    await page.waitForTimeout(400);
+    await page.screenshot({ path: `${shotsDir}/login.png` });
+    console.log('[console-e2e] shot: login');
+  }
 
   await browser.close();
   console.log(`\nCONSOLE E2E PASS: ${steps.length} UI flows verified against the real backend.`);

@@ -42,6 +42,8 @@ export interface Device {
   status: DeviceStatus;
   last_seen_at: string | null;
   created_at: string;
+  // Returned by the backend on /devices and /devices/{id}.
+  app_version?: string | null;
 }
 
 export type SessionType = "unattended" | "attended";

@@ -16,8 +16,8 @@ export default function IndexPage() {
   }, [token, loading, router]);
 
   return (
-    <div className="flex min-h-[60vh] items-center justify-center text-slate-500">
-      <span className="animate-pulse">Loading…</span>
+    <div className="flex min-h-screen items-center justify-center bg-app text-fg-muted">
+      <span className="animate-pulse text-sm">Loading…</span>
     </div>
   );
 }

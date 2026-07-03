@@ -93,6 +93,7 @@ echo "[console-e2e] running browser driver"
 E2E_CONSOLE_URL="http://localhost:$CONSOLE_PORT" \
 E2E_TECH_EMAIL="admin@example.com" E2E_TECH_PASSWORD="devadminpassword" \
 E2E_DEVICE_NAME="$DEV_NAME" E2E_SESSION_ID="$SID" \
+E2E_SHOTS_DIR="${E2E_SHOTS_DIR:-}" \
 node test/e2e/console-e2e.mjs
 RC=$?
 [ $RC -eq 0 ] || fail "browser driver exited $RC"
