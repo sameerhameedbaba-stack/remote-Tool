@@ -172,10 +172,15 @@ Response `200`:
 { "session_id": "...", "device_token": "<ephemeral_device_id>.<secret>",
   "ice_servers": [ ... ] }
 ```
-- Validates code (exists, not expired, not used). Marks it used (single-use).
+- Validates code (exists, not expired, not used). Marks it used (single-use)
+  via an atomic Redis `GETDEL`.
 - Creates an ephemeral device row (`mode="attended"`) bound to the session.
 - Writes audit `session.approve` (the end user, by entering the code, consents).
-- `410 expired` / `404 not_found` / `409 conflict` (already used).
+- Errors: `400 invalid_request` for a malformed/wrong-length code (rejected
+  before lookup); `404 not_found` for a code that does not resolve. Because the
+  single-use `GETDEL` design cannot distinguish expired vs. already-consumed
+  vs. never-existed, all three collapse to `404` rather than separate
+  `410`/`409` codes — an intentional, documented simplification.
 
 ---
 
