@@ -1,0 +1,57 @@
+[package]
+name = "remote_agent"
+version = "0.1.0"
+edition = "2021"
+description = "Rust Windows agent for the consented, audited, banner-enforced remote-support MVP."
+license = "MIT"
+publish = false
+
+[[bin]]
+name = "remote-agent"
+path = "src/main.rs"
+
+[dependencies]
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Async runtime
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync", "signal", "io-std"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# HTTP client (rustls only, no OpenSSL so Linux CI stays lean)
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# WebSocket signaling client
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+futures-util = "0.3"
+
+# WebRTC peer connection + data channels
+webrtc = "0.11"
+bytes = "1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Errors / util
+anyhow = "1"
+thiserror = "1"
+base64 = "0.22"
+uuid = { version = "1", features = ["v4"] }
+
+# Windows-only functionality. Not pulled on the Linux CI host.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_Security_Cryptography",
+    "Win32_System_Memory",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Graphics_Gdi",
+    "Win32_System_LibraryLoader",
+] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt", "time"] }
