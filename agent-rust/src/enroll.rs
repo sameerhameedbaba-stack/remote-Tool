@@ -35,7 +35,9 @@ pub async fn enroll(cfg: &Config, name: &str, hostname: &str, os: &str) -> Resul
         .as_deref()
         .context("enrollment token not set (REMOTE_AGENT_ENROLLMENT_TOKEN)")?;
 
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .build()
+        .context("building HTTP client")?;
     let req = EnrollRequest {
         enrollment_token: token,
         name,

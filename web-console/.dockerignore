@@ -1,0 +1,16 @@
+# Keep the Docker build context small and prevent local artifacts/secrets from
+# being copied over the clean deps-stage node_modules or baked into layers.
+# (.gitignore is NOT honored by Docker.) package.json + package-lock.json are
+# intentionally NOT ignored — the deps stage needs them.
+.git
+.gitignore
+node_modules
+.next
+out
+*.env
+.env
+.env.*
+!.env.example
+Dockerfile
+.dockerignore
+*.tsbuildinfo

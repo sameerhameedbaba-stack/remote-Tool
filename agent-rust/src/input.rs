@@ -303,6 +303,34 @@ mod tests {
     }
 
     #[test]
+    fn apply_accepts_allowed_and_rejects_disallowed() {
+        // Allowed event: validate + audit-log + inject stub, returns Ok.
+        let ok = InputEvent::Key {
+            code: "KeyA".into(),
+            action: "down".into(),
+            modifiers: vec!["ctrl".into()],
+        };
+        assert!(apply(&ok).is_ok());
+
+        // Rejected event: apply() must fail at validation and never inject.
+        let bad = InputEvent::Key {
+            code: "rm -rf /".into(),
+            action: "down".into(),
+            modifiers: vec![],
+        };
+        assert!(matches!(apply(&bad), Err(InputError::BadKeyCode(_))));
+
+        // A mouse action with a disallowed button is also rejected by apply().
+        let bad_mouse = InputEvent::Mouse {
+            x: 0.5,
+            y: 0.5,
+            button: "extra7".into(),
+            action: "down".into(),
+        };
+        assert!(matches!(apply(&bad_mouse), Err(InputError::BadButton(_))));
+    }
+
+    #[test]
     fn parses_wire_format() {
         let raw = r#"{ "t": "key", "code": "KeyA", "action": "down", "modifiers": ["ctrl"] }"#;
         let ev: InputEvent = serde_json::from_str(raw).unwrap();

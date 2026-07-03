@@ -53,6 +53,10 @@ impl Envelope {
 pub struct SessionControlPayload {
     /// `start` | `end` | `approve`.
     pub action: String,
+    /// Optional technician display name (backend contract). Absent on older
+    /// payloads; the banner falls back to an "Unknown technician" label.
+    #[serde(default)]
+    pub technician_name: Option<String>,
 }
 
 /// Payload of a `banner` acknowledgement (agent → server). Provided as a typed

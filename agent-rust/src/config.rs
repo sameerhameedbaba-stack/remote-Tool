@@ -103,6 +103,92 @@ fn default_data_dir() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    // The REMOTE_AGENT_* vars are process-global; serialize every test that
+    // reads or mutates them so parallel runs don't race.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    const KEYS: &[&str] = &[
+        "REMOTE_AGENT_API_BASE",
+        "REMOTE_AGENT_WS_BASE",
+        "REMOTE_AGENT_ENROLLMENT_TOKEN",
+        "REMOTE_AGENT_TOKEN_PATH",
+        "REMOTE_AGENT_DOWNLOADS_DIR",
+    ];
+
+    /// Run `f` with all `REMOTE_AGENT_*` vars cleared, restoring them after.
+    fn with_clean_env<T>(f: impl FnOnce() -> T) -> T {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let saved: Vec<(&str, Option<String>)> =
+            KEYS.iter().map(|k| (*k, std::env::var(k).ok())).collect();
+        for k in KEYS {
+            std::env::remove_var(k);
+        }
+        let out = f();
+        for (k, v) in saved {
+            match v {
+                Some(val) => std::env::set_var(k, val),
+                None => std::env::remove_var(k),
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn resolve_precedence_override_env_default() {
+        with_clean_env(|| {
+            // Env is set but an explicit override wins.
+            std::env::set_var("REMOTE_AGENT_API_BASE", "http://from-env:1");
+            let c = Config::resolve(Some("http://override:2".into()), None, None).unwrap();
+            assert_eq!(c.api_base, "http://override:2");
+
+            // No override: env wins over the compiled default.
+            let c2 = Config::resolve(None, None, None).unwrap();
+            assert_eq!(c2.api_base, "http://from-env:1");
+
+            // No override, no env: the default is used.
+            std::env::remove_var("REMOTE_AGENT_API_BASE");
+            let c3 = Config::resolve(None, None, None).unwrap();
+            assert_eq!(c3.api_base, DEFAULT_API_BASE);
+            assert_eq!(c3.ws_base, DEFAULT_WS_BASE);
+        });
+    }
+
+    #[test]
+    fn resolve_filters_empty_enrollment_token() {
+        with_clean_env(|| {
+            // Empty override is filtered to None.
+            let c = Config::resolve(None, None, Some(String::new())).unwrap();
+            assert!(c.enrollment_token.is_none());
+
+            // Empty env value is also filtered to None.
+            std::env::set_var("REMOTE_AGENT_ENROLLMENT_TOKEN", "");
+            let c2 = Config::resolve(None, None, None).unwrap();
+            assert!(c2.enrollment_token.is_none());
+
+            // A non-empty override is preserved.
+            let c3 = Config::resolve(None, None, Some("tok-123".into())).unwrap();
+            assert_eq!(c3.enrollment_token.as_deref(), Some("tok-123"));
+        });
+    }
+
+    #[test]
+    fn resolve_defaults_and_overrides_paths() {
+        with_clean_env(|| {
+            // Defaults: derived from the data dir with the expected basenames.
+            let c = Config::resolve(None, None, None).unwrap();
+            assert!(c.token_path.ends_with("device_token.bin"));
+            assert!(c.downloads_dir.ends_with("downloads"));
+
+            // Env vars override the defaults verbatim.
+            std::env::set_var("REMOTE_AGENT_TOKEN_PATH", "/custom/tok.bin");
+            std::env::set_var("REMOTE_AGENT_DOWNLOADS_DIR", "/custom/dl");
+            let c2 = Config::resolve(None, None, None).unwrap();
+            assert_eq!(c2.token_path, PathBuf::from("/custom/tok.bin"));
+            assert_eq!(c2.downloads_dir, PathBuf::from("/custom/dl"));
+        });
+    }
 
     #[test]
     fn api_url_joins_correctly() {
@@ -122,6 +208,7 @@ mod tests {
 
     #[test]
     fn trailing_slash_is_trimmed() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let cfg = Config::resolve(
             Some("http://example.com/".into()),
             Some("ws://example.com/".into()),

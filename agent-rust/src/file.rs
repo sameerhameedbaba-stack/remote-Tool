@@ -63,6 +63,8 @@ pub enum FileError {
     UnknownTransfer(String),
     #[error("invalid base64 chunk")]
     BadBase64,
+    #[error("file offer id {0} is already active")]
+    DuplicateId(String),
 }
 
 /// Sanitize a peer-supplied file name down to a safe basename.
@@ -171,6 +173,11 @@ impl FileReceiver {
     /// Handle a `file-offer`: validate name + size, open the destination file.
     /// Returns the sanitized destination path on acceptance.
     pub fn on_offer(&mut self, id: &str, name: &str, size: u64) -> Result<PathBuf, FileError> {
+        // Reject a duplicate id before touching the filesystem: replacing an
+        // existing `Inbound` would silently drop its open handle mid-transfer.
+        if self.active.contains_key(id) {
+            return Err(FileError::DuplicateId(id.into()));
+        }
         if size > MAX_FILE_BYTES {
             return Err(FileError::TooLarge(size, MAX_FILE_BYTES));
         }
@@ -204,6 +211,13 @@ impl FileReceiver {
                 expected: inbound.next_seq,
                 got: seq,
             });
+        }
+        // Reject on the ENCODED length BEFORE decoding to avoid memory
+        // amplification from a hostile peer: base64 packs 3 bytes into 4 chars,
+        // so an encoded string longer than this cannot decode to <= the cap.
+        let max_encoded = MAX_CHUNK_BYTES / 3 * 4 + 4;
+        if b64.len() > max_encoded {
+            return Err(FileError::ChunkTooLarge);
         }
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(b64)
@@ -342,6 +356,37 @@ mod tests {
         rx.on_offer("t", "x.bin", 3).unwrap();
         let c = base64::engine::general_purpose::STANDARD.encode(b"toolong");
         assert!(matches!(rx.on_chunk("t", 0, &c), Err(FileError::Overflow)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rejects_duplicate_active_id() {
+        let dir = std::env::temp_dir().join(format!("remote-agent-dup-{}", uuid::Uuid::new_v4()));
+        let mut rx = FileReceiver::new(dir.clone());
+        rx.on_offer("dup", "a.txt", 10).unwrap();
+        // A second offer with the same id must be rejected, not replace the
+        // in-flight transfer (which would drop its open file handle).
+        assert!(matches!(
+            rx.on_offer("dup", "b.txt", 10),
+            Err(FileError::DuplicateId(_))
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rejects_oversized_encoded_chunk_before_decode() {
+        let dir = std::env::temp_dir().join(format!("remote-agent-enc-{}", uuid::Uuid::new_v4()));
+        let mut rx = FileReceiver::new(dir.clone());
+        // Large declared size so the encoded-length guard, not the overflow
+        // guard, is what rejects the chunk.
+        rx.on_offer("t", "big.bin", MAX_FILE_BYTES).unwrap();
+        // Valid base64 characters, but longer than any chunk could legally be:
+        // rejected on encoded length before any decode allocation occurs.
+        let huge = "A".repeat(MAX_CHUNK_BYTES / 3 * 4 + 8);
+        assert!(matches!(
+            rx.on_chunk("t", 0, &huge),
+            Err(FileError::ChunkTooLarge)
+        ));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

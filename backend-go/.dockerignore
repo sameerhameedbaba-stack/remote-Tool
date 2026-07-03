@@ -1,0 +1,14 @@
+# Keep the Docker build context small and prevent secrets/artifacts from being
+# baked into image layers. (.gitignore is NOT honored by Docker.)
+.git
+.gitignore
+bin/
+tmp/
+*.env
+.env
+.env.*
+!.env.example
+*_test.go
+README.md
+Dockerfile
+.dockerignore

@@ -127,24 +127,69 @@ async fn run_service(cfg: Config) -> Result<()> {
         }
     };
 
+    // Shared presence status: the heartbeat reports it every tick; the session
+    // loop flips it to in-session while a session is active.
+    let status = heartbeat::PresenceStatus::new();
+
     // Heartbeat loop runs for the life of the process.
     let hb_cfg = cfg.clone();
     let hb_token = device_token.clone();
+    let hb_status = status.clone();
     let _hb = tokio::spawn(async move {
-        if let Err(e) = heartbeat::run_loop(hb_cfg, hb_token).await {
+        if let Err(e) = heartbeat::run_loop(hb_cfg, hb_token, hb_status).await {
             tracing::error!(error = %e, "heartbeat loop exited");
         }
     });
 
-    // Connect signaling and wait for the backend to start a session.
-    let conn = signal::connect_agent(&cfg.ws_base, &device_token)
-        .await
-        .context("connecting /ws/agent")?;
-
     let ice = ice_servers_from_env();
-    // Unattended: keep the socket open and serve successive sessions until the
-    // connection drops.
-    run_session_loop(conn, &cfg, ice, &device_token, "Technician", true).await
+
+    // Unattended service: reconnect forever with capped exponential backoff.
+    // When the read pump ends (WS drop / backend restart / idle timeout) the
+    // session loop returns and we reconnect, so the agent never becomes a
+    // heartbeat-only zombie that still looks ONLINE. Backoff resets after a
+    // connection that lived long enough to be considered healthy.
+    let mut attempt: u32 = 0;
+    loop {
+        let elapsed = match signal::connect_agent(&cfg.ws_base, &device_token).await {
+            Ok(conn) => {
+                let started = std::time::Instant::now();
+                match run_session_loop(conn, &cfg, ice.clone(), &device_token, status.clone(), true)
+                    .await
+                {
+                    Ok(()) => tracing::info!("signaling connection closed; reconnecting"),
+                    Err(e) => tracing::error!(error = %e, "session loop error; reconnecting"),
+                }
+                Some(started.elapsed())
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "connecting /ws/agent failed; will retry");
+                None
+            }
+        };
+        // A connection that lasted a while is healthy: reset the backoff.
+        if matches!(elapsed, Some(d) if d >= std::time::Duration::from_secs(60)) {
+            attempt = 0;
+        }
+        let delay = reconnect_backoff(attempt);
+        attempt = attempt.saturating_add(1);
+        tracing::info!(
+            delay_ms = delay.as_millis() as u64,
+            attempt,
+            "backing off before reconnect"
+        );
+        tokio::time::sleep(delay).await;
+    }
+}
+
+/// Capped exponential reconnect backoff with deterministic jitter.
+///
+/// Yields 1s, 2s, 4s, 8s, 16s, then 30s (cap). `std` ships no RNG, so the
+/// jitter is a small deterministic offset derived from the attempt counter —
+/// enough to de-synchronize a fleet of agents without a random source.
+fn reconnect_backoff(attempt: u32) -> std::time::Duration {
+    let secs = (1u64 << attempt.min(5)).min(30);
+    let jitter_ms = (attempt as u64 % 8) * 63; // 0..=441ms
+    std::time::Duration::from_secs(secs) + std::time::Duration::from_millis(jitter_ms)
 }
 
 // ---------------------------------------------------------------------------
@@ -178,7 +223,9 @@ async fn run_portable(cfg: Config) -> Result<()> {
     }
 
     let hostname = enroll::detect_hostname();
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .build()
+        .context("building HTTP client")?;
     let resp = client
         .post(cfg.api_url("/attended/join"))
         .json(&serde_json::json!({
@@ -203,13 +250,14 @@ async fn run_portable(cfg: Config) -> Result<()> {
         .await
         .context("connecting /ws/agent (attended)")?;
 
-    // Attended: a one-shot session; exit when it ends.
+    // Attended: a one-shot session; exit when it ends. No heartbeat runs in
+    // this mode, so the presence status is a throwaway.
     run_session_loop(
         conn,
         &cfg,
         join.ice_servers,
         &join.device_token,
-        "Technician",
+        heartbeat::PresenceStatus::new(),
         false,
     )
     .await
@@ -218,12 +266,21 @@ async fn run_portable(cfg: Config) -> Result<()> {
 // ---------------------------------------------------------------------------
 // shared session loop
 // ---------------------------------------------------------------------------
+/// Why a session-start sequence aborted. `Transport` means the signaling send
+/// channel is gone (the pump task is dead) and the loop must end; `Setup` is
+/// any other failure and, in service mode, is survivable — the process skips
+/// this session instead of dying.
+enum StartFailure {
+    Transport,
+    Setup(anyhow::Error),
+}
+
 async fn run_session_loop(
     mut conn: SignalConnection,
     cfg: &Config,
     ice: Vec<IceServerConfig>,
     device_token: &str,
-    technician_label: &str,
+    status: heartbeat::PresenceStatus,
     keep_alive: bool,
 ) -> Result<()> {
     let mut sess: Option<session::Session> = None;
@@ -248,67 +305,175 @@ async fn run_session_loop(
                 match ctrl.action.as_str() {
                     "start" => {
                         let sid = env.session_id.clone();
-                        let mut s = session::Session::new(sid.clone());
 
-                        // MANDATORY banner BEFORE anything becomes active.
-                        let handle = banner::show(&sid, technician_label)
-                            .context("showing mandatory banner")?;
-                        s.mark_banner_shown()?;
-                        _banner_handle = Some(handle);
-
-                        // Ack banner visibility so the backend may mark active.
-                        conn.tx
-                            .send(Envelope::new(
-                                EnvelopeType::Banner,
-                                sid.clone(),
-                                serde_json::json!({ "visible": true }),
-                            ))
-                            .context("sending banner ack")?;
-
-                        // Only now may the session go active.
-                        s.activate()?;
-
-                        // Per-session audit reporter: ships file.transfer,
-                        // clipboard.sync, and aggregated input.command_attempt
-                        // (counts only) to the backend audit trail.
-                        let rep = audit_report::AuditReporter::new(
-                            cfg.api_url("/agent/events"),
-                            device_token.to_string(),
-                            sid.clone(),
-                        );
-                        let flush_rep = rep.clone();
-                        flush_task = Some(tokio::spawn(async move {
-                            let mut tick = tokio::time::interval(std::time::Duration::from_secs(5));
-                            tick.tick().await; // consume immediate first tick
-                            loop {
-                                tick.tick().await;
-                                flush_rep.flush_input();
+                        // A duplicate "start" without an intervening "end" must
+                        // not leak the previous session's flush task, reporter,
+                        // or peer connection. Tear the old one down first.
+                        if sess.is_some() || peer.is_some() || flush_task.is_some() {
+                            tracing::warn!(%sid, "duplicate 'start' while a session is active; tearing down the previous session first");
+                            if let Some(r) = reporter.take() {
+                                r.flush_input();
                             }
-                        }));
-                        reporter = Some(rep.clone());
-
-                        // Build the peer connection (agent is the offerer).
-                        let p = PeerSession::new(
-                            sid.clone(),
-                            ice.clone(),
-                            cfg.downloads_dir.clone(),
-                            conn.tx.clone(),
-                            Some(rep),
-                        )
-                        .await
-                        .context("building peer connection")?;
-
-                        // TODO: real screen source; interface wired, no fake frames.
-                        if let Ok(src) = capture::open_primary_display() {
-                            let _ = p.attach_screen_track(src);
+                            if let Some(t) = flush_task.take() {
+                                t.abort();
+                            }
+                            if let Some(mut s) = sess.take() {
+                                let _ = s.end();
+                            }
+                            if let Some(p) = peer.take() {
+                                let _ = p.close().await;
+                            }
+                            _banner_handle = None;
+                            status.set_idle();
                         }
 
-                        let offer = p.create_offer_envelope().await.context("creating offer")?;
-                        conn.tx.send(offer).context("sending offer")?;
+                        // Fail closed to a neutral label when the backend did not
+                        // supply a technician name.
+                        let tech_label = ctrl
+                            .technician_name
+                            .as_deref()
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
+                            .unwrap_or("Unknown technician")
+                            .to_string();
 
-                        sess = Some(s);
-                        peer = Some(p);
-                        tracing::info!(%sid, "session active; banner shown and acked");
+                        // Partial state built during start; each holder is filled
+                        // as its step succeeds so a mid-sequence failure can be
+                        // torn down cleanly instead of killing the process.
+                        let mut new_sess: Option<session::Session> = None;
+                        let mut new_banner: Option<banner::BannerHandle> = None;
+                        let mut new_reporter: Option<audit_report::AuditReporter> = None;
+                        let mut new_flush: Option<tokio::task::JoinHandle<()>> = None;
+                        let mut new_peer: Option<PeerSession> = None;
+
+                        // The whole start sequence is fallible-in-a-block: one
+                        // failed/hostile start must not propagate out and kill the
+                        // process in service mode.
+                        let outcome: std::result::Result<(), StartFailure> = async {
+                            let mut s = session::Session::new(sid.clone());
+
+                            // MANDATORY banner BEFORE anything becomes active.
+                            let handle = banner::show(&sid, &tech_label)
+                                .context("showing mandatory banner")
+                                .map_err(StartFailure::Setup)?;
+                            new_banner = Some(handle);
+                            s.mark_banner_shown()
+                                .context("banner-shown transition")
+                                .map_err(StartFailure::Setup)?;
+
+                            // Ack banner visibility so the backend may mark active.
+                            conn.tx
+                                .send(Envelope::new(
+                                    EnvelopeType::Banner,
+                                    sid.clone(),
+                                    serde_json::json!({ "visible": true }),
+                                ))
+                                .map_err(|_| StartFailure::Transport)?;
+
+                            // Only now may the session go active.
+                            s.activate()
+                                .context("activate transition")
+                                .map_err(StartFailure::Setup)?;
+
+                            // Per-session audit reporter: ships file.transfer,
+                            // clipboard.sync, and aggregated input.command_attempt
+                            // (counts only) to the backend audit trail.
+                            let rep = audit_report::AuditReporter::new(
+                                cfg.api_url("/agent/events"),
+                                device_token.to_string(),
+                                sid.clone(),
+                            )
+                            .context("building audit reporter")
+                            .map_err(StartFailure::Setup)?;
+                            let flush_rep = rep.clone();
+                            new_flush = Some(tokio::spawn(async move {
+                                let mut tick =
+                                    tokio::time::interval(std::time::Duration::from_secs(5));
+                                tick.tick().await; // consume immediate first tick
+                                loop {
+                                    tick.tick().await;
+                                    flush_rep.flush_input();
+                                }
+                            }));
+                            new_reporter = Some(rep.clone());
+
+                            // Build the peer connection (agent is the offerer).
+                            let p = PeerSession::new(
+                                sid.clone(),
+                                ice.clone(),
+                                cfg.downloads_dir.clone(),
+                                conn.tx.clone(),
+                                Some(rep),
+                            )
+                            .await
+                            .context("building peer connection")
+                            .map_err(StartFailure::Setup)?;
+
+                            // TODO: real screen source; interface wired, no fake frames.
+                            if let Ok(src) = capture::open_primary_display() {
+                                let _ = p.attach_screen_track(src);
+                            }
+
+                            let offer = p
+                                .create_offer_envelope()
+                                .await
+                                .context("creating offer")
+                                .map_err(StartFailure::Setup)?;
+                            new_peer = Some(p);
+                            new_sess = Some(s);
+                            conn.tx.send(offer).map_err(|_| StartFailure::Transport)?;
+                            Ok(())
+                        }
+                        .await;
+
+                        match outcome {
+                            Ok(()) => {
+                                sess = new_sess;
+                                peer = new_peer;
+                                _banner_handle = new_banner;
+                                reporter = new_reporter;
+                                flush_task = new_flush;
+                                status.set_in_session();
+                                tracing::info!(%sid, "session active; banner shown and acked");
+                            }
+                            Err(fail) => {
+                                // Tear down any partially-built state.
+                                if let Some(r) = new_reporter.take() {
+                                    r.flush_input();
+                                }
+                                if let Some(t) = new_flush.take() {
+                                    t.abort();
+                                }
+                                if let Some(mut s) = new_sess.take() {
+                                    let _ = s.end();
+                                }
+                                if let Some(p) = new_peer.take() {
+                                    let _ = p.close().await;
+                                }
+                                drop(new_banner.take());
+                                status.set_idle();
+
+                                match fail {
+                                    StartFailure::Transport => {
+                                        tracing::error!(%sid, "signaling transport closed during session start; ending loop");
+                                        break;
+                                    }
+                                    StartFailure::Setup(e) => {
+                                        tracing::error!(error = %e, %sid, "session start failed; skipping this session");
+                                        // Best-effort: tell the backend it ended.
+                                        let _ = conn.tx.send(Envelope::new(
+                                            EnvelopeType::SessionControl,
+                                            sid.clone(),
+                                            serde_json::json!({ "action": "end" }),
+                                        ));
+                                        if keep_alive {
+                                            continue;
+                                        }
+                                        break;
+                                    }
+                                }
+                            }
+                        }
                     }
                     "end" => {
                         // Flush any pending aggregated input before tearing down.
@@ -326,6 +491,7 @@ async fn run_session_loop(
                         }
                         sess = None;
                         _banner_handle = None;
+                        status.set_idle();
                         tracing::info!(session_id = %env.session_id, "session ended");
                         if keep_alive {
                             // Unattended service: keep the socket open and wait
@@ -368,6 +534,7 @@ async fn run_session_loop(
     if let Some(t) = flush_task.take() {
         t.abort();
     }
+    status.set_idle();
     conn.pump.abort();
     Ok(())
 }
@@ -412,5 +579,58 @@ fn run_uninstall() -> Result<()> {
     {
         eprintln!("`uninstall` is a Windows-only operation; this is a non-Windows build (no-op).");
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    // Serialize the env-var mutation so parallel tests don't race on the shared
+    // process environment.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn with_ice_env<T>(val: Option<&str>, f: impl FnOnce() -> T) -> T {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let key = "REMOTE_AGENT_ICE_SERVERS";
+        let saved = std::env::var(key).ok();
+        match val {
+            Some(v) => std::env::set_var(key, v),
+            None => std::env::remove_var(key),
+        }
+        let out = f();
+        match saved {
+            Some(v) => std::env::set_var(key, v),
+            None => std::env::remove_var(key),
+        }
+        out
+    }
+
+    #[test]
+    fn ice_servers_valid_array() {
+        let servers = with_ice_env(
+            Some(r#"[{"urls":["stun:a","turn:b"]},{"urls":"stun:c"}]"#),
+            ice_servers_from_env,
+        );
+        assert_eq!(servers.len(), 2);
+    }
+
+    #[test]
+    fn ice_servers_single_string() {
+        let servers = with_ice_env(Some(r#"[{"urls":"stun:only"}]"#), ice_servers_from_env);
+        assert_eq!(servers.len(), 1);
+    }
+
+    #[test]
+    fn ice_servers_invalid_json_is_empty() {
+        let servers = with_ice_env(Some("not json at all"), ice_servers_from_env);
+        assert!(servers.is_empty());
+    }
+
+    #[test]
+    fn ice_servers_absent_is_empty() {
+        let servers = with_ice_env(None, ice_servers_from_env);
+        assert!(servers.is_empty());
     }
 }

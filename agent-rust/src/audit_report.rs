@@ -19,6 +19,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
+use anyhow::{Context, Result};
 use serde_json::json;
 
 /// Reports data-channel audit events for a single session.
@@ -40,16 +41,19 @@ struct Inner {
 impl AuditReporter {
     /// Build a reporter targeting `events_url` (the backend `/agent/events`
     /// endpoint) authenticated with `device_token` for `session_id`.
-    pub fn new(events_url: String, device_token: String, session_id: String) -> Self {
-        Self {
+    pub fn new(events_url: String, device_token: String, session_id: String) -> Result<Self> {
+        let client = reqwest::Client::builder()
+            .build()
+            .context("building audit HTTP client")?;
+        Ok(Self {
             inner: Arc::new(Inner {
-                client: reqwest::Client::new(),
+                client,
                 events_url,
                 device_token,
                 session_id,
                 input_count: AtomicU64::new(0),
             }),
-        }
+        })
     }
 
     /// Fire-and-forget report of a single event with non-content metadata.

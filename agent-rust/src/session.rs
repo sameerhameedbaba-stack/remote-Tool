@@ -153,6 +153,27 @@ mod tests {
     }
 
     #[test]
+    fn cannot_transition_from_ended() {
+        let mut s = Session::new("s1");
+        s.end().unwrap();
+        assert_eq!(
+            s.activate().unwrap_err(),
+            TransitionError::Illegal {
+                from: SessionState::Ended,
+                action: "activate"
+            }
+        );
+        assert_eq!(
+            s.mark_banner_shown().unwrap_err(),
+            TransitionError::Illegal {
+                from: SessionState::Ended,
+                action: "mark_banner_shown"
+            }
+        );
+        assert_eq!(s.state(), SessionState::Ended);
+    }
+
+    #[test]
     fn cannot_reshow_banner_after_active() {
         let mut s = Session::new("s1");
         s.mark_banner_shown().unwrap();

@@ -22,3 +22,4 @@ web-console/node_modules/
 # Build artifacts
 dist/
 build/
+*.tsbuildinfo

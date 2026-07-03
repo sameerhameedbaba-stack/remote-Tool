@@ -5,11 +5,53 @@
 use crate::config::Config;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 /// Default heartbeat cadence. The backend presence TTL is 30s, so 15s gives a
 /// comfortable 2x margin.
 pub const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
+
+/// Presence status shared between the session loop and the heartbeat loop.
+/// Encoded as an atomic so the heartbeat can read the live value each tick
+/// without locking. `idle` when no session is active, `in-session` while one is.
+#[derive(Clone)]
+pub struct PresenceStatus(Arc<AtomicU8>);
+
+const STATUS_IDLE: u8 = 0;
+const STATUS_IN_SESSION: u8 = 1;
+
+impl PresenceStatus {
+    /// Create a new shared status, initially `idle`.
+    pub fn new() -> Self {
+        Self(Arc::new(AtomicU8::new(STATUS_IDLE)))
+    }
+
+    /// Mark the device as being in an active session.
+    pub fn set_in_session(&self) {
+        self.0.store(STATUS_IN_SESSION, Ordering::Relaxed);
+    }
+
+    /// Mark the device as idle (no active session).
+    pub fn set_idle(&self) {
+        self.0.store(STATUS_IDLE, Ordering::Relaxed);
+    }
+
+    /// The wire status string for the current value.
+    pub fn as_str(&self) -> &'static str {
+        match self.0.load(Ordering::Relaxed) {
+            STATUS_IN_SESSION => "in-session",
+            _ => "idle",
+        }
+    }
+}
+
+impl Default for PresenceStatus {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 #[derive(Debug, Serialize)]
 struct HeartbeatRequest<'a> {
@@ -61,13 +103,17 @@ pub async fn send_once(
 ///
 /// Transient failures are logged and retried on the next tick rather than
 /// aborting the loop — a temporary backend blip should not deregister the agent.
-pub async fn run_loop(cfg: Config, device_token: String) -> Result<()> {
-    let client = reqwest::Client::new();
+pub async fn run_loop(cfg: Config, device_token: String, status: PresenceStatus) -> Result<()> {
+    let client = reqwest::Client::builder()
+        .build()
+        .context("building HTTP client")?;
     let mut ticker = tokio::time::interval(HEARTBEAT_INTERVAL);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         ticker.tick().await;
-        if let Err(e) = send_once(&client, &cfg, &device_token, "idle").await {
+        // Report the live presence status so an active session shows as
+        // in-session rather than always idle.
+        if let Err(e) = send_once(&client, &cfg, &device_token, status.as_str()).await {
             tracing::warn!(error = %e, "heartbeat failed; will retry");
         }
     }
