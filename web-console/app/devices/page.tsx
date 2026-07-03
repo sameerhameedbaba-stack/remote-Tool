@@ -14,11 +14,12 @@ import {
 } from "lucide-react";
 import { RequireAuth, useAuth } from "@/lib/auth";
 import {
-  ApiError,
-  createSession,
   listDevices,
+  errorMessage,
+  isNetworkError,
   type Device,
 } from "@/lib/api";
+import { startDeviceSession, PRESENCE_POLL_MS } from "@/lib/session-connect";
 import {
   Button,
   IconButton,
@@ -64,7 +65,11 @@ function DevicesContent() {
 
   const [devices, setDevices] = useState<Device[]>([]);
   const [loading, setLoading] = useState(true);
+  // `error` is reserved for list-load failures (full-bleed ErrorState).
   const [error, setError] = useState<string | null>(null);
+  // `actionError` surfaces connect() failures in a banner above the table so a
+  // failed session start never wipes the device list.
+  const [actionError, setActionError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<Filter>("all");
   const [view, setView] = useState<"table" | "cards">("table");
@@ -79,8 +84,8 @@ function DevicesContent() {
         setDevices(res.devices);
         setError(null);
       } catch (err) {
-        if (err instanceof ApiError && err.code === "network_error") return;
-        setError(err instanceof ApiError ? err.message : "Failed to load devices");
+        if (isNetworkError(err)) return;
+        setError(errorMessage(err, "Failed to load devices"));
       } finally {
         setLoading(false);
       }
@@ -99,7 +104,7 @@ function DevicesContent() {
   }, [query, load]);
 
   useEffect(() => {
-    const id = setInterval(() => void load(query), 10_000);
+    const id = setInterval(() => void load(query), PRESENCE_POLL_MS);
     return () => clearInterval(id);
   }, [load, query]);
 
@@ -124,20 +129,14 @@ function DevicesContent() {
 
   const connect = async (device: Device) => {
     if (!token) return;
+    setActionError(null);
     setConnectingId(device.id);
     try {
-      const res = await createSession(token, device.id);
-      try {
-        sessionStorage.setItem(
-          `rs_ice:${res.session.id}`,
-          JSON.stringify(res.ice_servers),
-        );
-      } catch {
-        /* ignore */
-      }
-      router.push(`/sessions/${res.session.id}`);
+      const session = await startDeviceSession(token, device.id);
+      router.push(`/sessions/${session.id}`);
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Failed to start session");
+      // Route to the action banner (NOT `error`) so the list stays rendered.
+      setActionError(errorMessage(err, "Failed to start session"));
       setConnectingId(null);
     }
   };
@@ -218,6 +217,7 @@ function DevicesContent() {
           <button
             key={f.id}
             onClick={() => setFilter(f.id)}
+            aria-pressed={filter === f.id}
             className={cn(
               "rounded-full border px-3 py-1 text-[12px] font-medium transition-colors",
               filter === f.id
@@ -229,6 +229,21 @@ function DevicesContent() {
           </button>
         ))}
       </div>
+
+      {actionError && (
+        <div
+          role="alert"
+          className="mt-4 flex items-center justify-between gap-3 rounded-lg border border-danger/30 bg-danger-soft px-3 py-2 text-[13px] text-danger"
+        >
+          <span>{actionError}</span>
+          <button
+            onClick={() => setActionError(null)}
+            className="shrink-0 text-[12px] font-medium text-danger/80 hover:text-danger"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
 
       {/* Content */}
       <Card className="mt-4 p-0">

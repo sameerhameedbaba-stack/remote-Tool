@@ -11,8 +11,9 @@ import {
 } from "lucide-react";
 import { RequireAuth, useAuth } from "@/lib/auth";
 import {
-  ApiError,
   listAudit,
+  errorMessage,
+  isNetworkError,
   type AuditEvent,
   type AuditEventType,
 } from "@/lib/api";
@@ -32,7 +33,12 @@ import {
   formatTime,
   timeAgo,
 } from "@/components/ui";
-import { AUDIT_META, AUDIT_EVENT_TYPES } from "@/components/domain/audit-meta";
+import {
+  AUDIT_META,
+  AUDIT_EVENT_TYPES,
+  getAuditMeta,
+  kindDotClass,
+} from "@/components/domain/audit-meta";
 import { cn } from "@/lib/cn";
 
 const SEVERITY_TONE = {
@@ -49,13 +55,20 @@ function actor(e: AuditEvent): string {
   return parts.join(" · ") || "system";
 }
 
+function formatMetaValue(value: unknown): string {
+  if (value === null || value === undefined) return String(value);
+  // Objects/arrays would stringify to "[object Object]"; serialize instead.
+  if (typeof value === "object") return JSON.stringify(value);
+  return String(value);
+}
+
 function metaSummary(e: AuditEvent): string {
   const m = e.metadata || {};
   const keys = Object.keys(m);
   if (keys.length === 0) return "";
   return keys
     .slice(0, 3)
-    .map((k) => `${k}=${String(m[k])}`)
+    .map((k) => `${k}=${formatMetaValue(m[k])}`)
     .join("  ");
 }
 
@@ -68,8 +81,12 @@ function AuditContent() {
   const [view, setView] = useState<"timeline" | "table">("timeline");
 
   const [eventType, setEventType] = useState<AuditEventType | "">("");
+  // Raw text-field state drives the inputs; the *applied* values (debounced)
+  // drive the request, so typing doesn't fire a request per keystroke.
   const [deviceId, setDeviceId] = useState("");
   const [sessionId, setSessionId] = useState("");
+  const [deviceIdApplied, setDeviceIdApplied] = useState("");
+  const [sessionIdApplied, setSessionIdApplied] = useState("");
 
   const [cursor, setCursor] = useState<string | null>(null);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
@@ -84,8 +101,8 @@ function AuditContent() {
           token,
           {
             event_type: eventType || undefined,
-            device_id: deviceId.trim() || undefined,
-            session_id: sessionId.trim() || undefined,
+            device_id: deviceIdApplied.trim() || undefined,
+            session_id: sessionIdApplied.trim() || undefined,
             cursor: activeCursor ?? undefined,
             limit: 50,
           },
@@ -95,14 +112,23 @@ function AuditContent() {
         setNextCursor(res.next_cursor);
         setError(null);
       } catch (err) {
-        if (err instanceof ApiError && err.code === "network_error") return;
-        setError(err instanceof ApiError ? err.message : "Failed to load audit log");
+        if (isNetworkError(err)) return;
+        setError(errorMessage(err, "Failed to load audit log"));
       } finally {
         setLoading(false);
       }
     },
-    [token, eventType, deviceId, sessionId],
+    [token, eventType, deviceIdApplied, sessionIdApplied],
   );
+
+  // Debounce the free-text filters (~250ms), mirroring the devices page.
+  useEffect(() => {
+    const t = setTimeout(() => {
+      setDeviceIdApplied(deviceId);
+      setSessionIdApplied(sessionId);
+    }, 250);
+    return () => clearTimeout(t);
+  }, [deviceId, sessionId]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -143,7 +169,7 @@ function AuditContent() {
   }, [events]);
 
   const EventBadge = ({ e }: { e: AuditEvent }) => {
-    const meta = AUDIT_META[e.event_type];
+    const meta = getAuditMeta(e.event_type);
     return (
       <StatusBadge kind={meta.kind} size="sm" icon={meta.icon}>
         <span data-testid="audit-event">{meta.label}</span>
@@ -242,19 +268,13 @@ function AuditContent() {
                 <ol className="relative space-y-3 pl-6">
                   <span className="absolute left-[9px] top-1 h-[calc(100%-0.5rem)] w-px bg-line" aria-hidden />
                   {group.items.map((e) => {
-                    const meta = AUDIT_META[e.event_type];
+                    const meta = getAuditMeta(e.event_type);
                     return (
                       <li key={e.id} className="relative" data-testid="audit-row">
                         <span
                           className={cn(
                             "absolute -left-6 top-1 grid h-[18px] w-[18px] place-items-center rounded-full border-2 border-surface-card",
-                            meta.kind === "warning"
-                              ? "bg-warning"
-                              : meta.kind === "success"
-                                ? "bg-success"
-                                : meta.kind === "info"
-                                  ? "bg-info"
-                                  : "bg-neutral",
+                            kindDotClass(meta.kind),
                           )}
                           aria-hidden
                         />

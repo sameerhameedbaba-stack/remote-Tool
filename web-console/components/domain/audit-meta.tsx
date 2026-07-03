@@ -12,6 +12,7 @@ import {
   FileUp,
   ClipboardCopy,
   MousePointer2,
+  CircleDot,
 } from "lucide-react";
 import type { AuditEventType } from "@/lib/api";
 import type { StatusKind } from "@/components/ui";
@@ -93,3 +94,32 @@ export const AUDIT_META: Record<AuditEventType, AuditMeta> = {
 };
 
 export const AUDIT_EVENT_TYPES = Object.keys(AUDIT_META) as AuditEventType[];
+
+// Safe accessor: audit event types arrive from the wire via an unchecked cast,
+// so an unknown/new type must not crash the timeline, table, or device drawer.
+// Falls back to a neutral, informative rendering keyed on the raw type string.
+export function getAuditMeta(eventType: string): AuditMeta {
+  const known = (AUDIT_META as Record<string, AuditMeta | undefined>)[eventType];
+  if (known) return known;
+  return {
+    label: eventType,
+    kind: "neutral",
+    severity: "info",
+    icon: <CircleDot className={ic} aria-hidden />,
+  };
+}
+
+// Tailwind background class for a status kind — used for the timeline dots so
+// the kind -> color mapping lives next to the rest of the audit rendering.
+export const KIND_DOT: Record<StatusKind, string> = {
+  info: "bg-info",
+  success: "bg-success",
+  warning: "bg-warning",
+  danger: "bg-danger",
+  neutral: "bg-neutral",
+  accent: "bg-accent",
+};
+
+export function kindDotClass(kind: StatusKind): string {
+  return KIND_DOT[kind] ?? KIND_DOT.neutral;
+}

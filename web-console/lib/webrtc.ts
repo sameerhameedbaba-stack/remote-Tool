@@ -96,6 +96,7 @@ export type SessionConnectionState =
   | "signaling"
   | "connecting"
   | "connected"
+  | "reconnecting"
   | "closed"
   | "failed";
 
@@ -219,6 +220,7 @@ export class RemoteSessionClient {
       this.log(`connection state: ${state}`);
       if (state === "connected") this.setState("connected");
       else if (state === "connecting") this.setState("connecting");
+      else if (state === "disconnected") this.setState("reconnecting");
       else if (state === "failed") this.setState("failed");
       else if (state === "closed") this.setState("closed");
     };

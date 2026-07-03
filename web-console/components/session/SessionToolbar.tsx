@@ -22,6 +22,7 @@ import {
   PanelRightOpen,
 } from "lucide-react";
 import { IconButton, Tooltip } from "@/components/ui";
+import type { PanelTab } from "@/components/session/SessionRightPanel";
 import { cn } from "@/lib/cn";
 
 export interface ToolbarProps {
@@ -29,7 +30,7 @@ export interface ToolbarProps {
   inputEnabled: boolean;
   onToggleInput: () => void;
   onClipboard: () => void;
-  onOpenPanel: (tab: string) => void;
+  onOpenPanel: (tab: PanelTab) => void;
   onFullscreen: () => void;
   onFit: () => void;
   onReconnect: () => void;

@@ -41,10 +41,13 @@ jobs:
           test -z "$(gofmt -l .)" || (echo "gofmt issues:" && gofmt -l . && exit 1)
           go test ./...
 
-      - name: Web console — production build
+      - name: Web console — lint, typecheck, unit tests, build
         working-directory: web-console
         run: |
           npm ci
+          npm run lint
+          npx tsc --noEmit
+          npm run test
           npm run build
 
   integration:

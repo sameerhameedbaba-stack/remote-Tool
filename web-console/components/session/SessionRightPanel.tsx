@@ -19,13 +19,13 @@ import type { Session } from "@/lib/api";
 import type { SessionConnectionState } from "@/lib/webrtc";
 import {
   Button,
-  IconButton,
   Field,
   Textarea,
   StatusBadge,
   ConnectionQualityIndicator,
 } from "@/components/ui";
 import { cn } from "@/lib/cn";
+import { isDangerous } from "@/lib/file-safety";
 
 export type PanelTab = "info" | "chat" | "files" | "clipboard" | "audit" | "notes";
 
@@ -35,13 +35,6 @@ export interface FileItem {
   size: number;
   status: "queued" | "sending" | "sent" | "failed" | "blocked";
   danger: boolean;
-}
-
-const DANGEROUS = [".exe", ".msi", ".bat", ".ps1", ".sh", ".cmd", ".scr"];
-
-function isDangerous(name: string) {
-  const lower = name.toLowerCase();
-  return DANGEROUS.some((ext) => lower.endsWith(ext));
 }
 
 function fmtBytes(n: number) {
@@ -95,10 +88,15 @@ export function SessionRightPanel({
   return (
     <div className="flex h-full w-full flex-col bg-surface">
       {/* Tab rail */}
-      <div className="flex shrink-0 items-center gap-0.5 border-b border-line px-2 py-2">
+      <div
+        role="tablist"
+        aria-label="Session panel"
+        className="flex shrink-0 items-center gap-0.5 border-b border-line px-2 py-2"
+      >
         {TABS.map((t) => (
           <button
             key={t.id}
+            role="tab"
             onClick={() => onTab(t.id)}
             aria-selected={tab === t.id}
             className={cn(

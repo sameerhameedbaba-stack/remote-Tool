@@ -75,6 +75,7 @@ export function SessionTopBar({
     signaling: "Negotiating…",
     connecting: "Connecting…",
     connected: "Connected",
+    reconnecting: "Reconnecting…",
     closed: "Closed",
     failed: "Connection failed",
   };

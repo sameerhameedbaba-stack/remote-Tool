@@ -59,6 +59,9 @@ export interface Session {
   started_at?: string | null;
   ended_at?: string | null;
   created_at: string;
+  // The backend now returns the relay/ICE servers on GET /sessions/{id} so a
+  // reloaded session page can recover them without the sessionStorage stash.
+  ice_servers?: IceServer[];
 }
 
 // RTCIceServer-compatible shape returned by the backend.
@@ -147,6 +150,19 @@ export class ApiError extends Error {
   }
 }
 
+// Narrow an unknown thrown value to a human-readable message, using the API
+// error message when available and a caller-supplied fallback otherwise.
+export function errorMessage(err: unknown, fallback: string): string {
+  return err instanceof ApiError ? err.message : fallback;
+}
+
+// True when the thrown value is an ApiError produced by a failed fetch (the
+// request never reached the server). Callers use this to ignore aborted /
+// offline polling without surfacing a scary banner.
+export function isNetworkError(err: unknown): boolean {
+  return err instanceof ApiError && err.code === "network_error";
+}
+
 // ---------------------------------------------------------------------------
 // Low-level request helper
 // ---------------------------------------------------------------------------
@@ -174,7 +190,7 @@ function buildUrl(
   return url.toString();
 }
 
-function isErrorEnvelope(value: unknown): value is ApiErrorEnvelope {
+export function isErrorEnvelope(value: unknown): value is ApiErrorEnvelope {
   if (typeof value !== "object" || value === null) return false;
   const maybe = value as { error?: unknown };
   if (typeof maybe.error !== "object" || maybe.error === null) return false;

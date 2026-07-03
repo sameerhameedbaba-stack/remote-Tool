@@ -19,11 +19,11 @@ import {
 } from "lucide-react";
 import { useAuth } from "@/lib/auth";
 import {
-  ApiError,
-  createSession,
   listDevices,
+  isNetworkError,
   type Device,
 } from "@/lib/api";
+import { startDeviceSession } from "@/lib/session-connect";
 import { PresenceBadge, ModeBadge } from "@/components/ui";
 import { osLabel, OsIcon } from "@/components/domain/os";
 import { cn } from "@/lib/cn";
@@ -81,7 +81,7 @@ export function CommandPalette() {
         const res = await listDevices(token, { q: query || undefined }, ctl.signal);
         setDevices(res.devices.slice(0, 6));
       } catch (err) {
-        if (!(err instanceof ApiError && err.code === "network_error")) {
+        if (!isNetworkError(err)) {
           setDevices([]);
         }
       } finally {
@@ -103,17 +103,9 @@ export function CommandPalette() {
       }
       setConnectingId(device.id);
       try {
-        const res = await createSession(token, device.id);
-        try {
-          sessionStorage.setItem(
-            `rs_ice:${res.session.id}`,
-            JSON.stringify(res.ice_servers),
-          );
-        } catch {
-          /* ignore */
-        }
+        const session = await startDeviceSession(token, device.id);
         setOpen(false);
-        router.push(`/sessions/${res.session.id}`);
+        router.push(`/sessions/${session.id}`);
       } catch {
         router.push(`/devices`);
         setOpen(false);

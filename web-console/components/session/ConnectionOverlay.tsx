@@ -58,6 +58,16 @@ export function ConnectionOverlay({
         </Button>
       </div>
     );
+  } else if (connState === "reconnecting") {
+    icon = <Loader2 className="h-7 w-7 animate-spin text-warning" aria-hidden />;
+    title = "Reconnecting…";
+    message =
+      "The connection was interrupted. Trying to recover the peer-to-peer link automatically.";
+    action = (
+      <Button variant="secondary" icon={<RefreshCw className="h-4 w-4" aria-hidden />} onClick={onReconnect}>
+        Reconnect now
+      </Button>
+    );
   } else if (!bannerAcked && (connState === "connecting" || connState === "signaling")) {
     icon = <ShieldQuestion className="h-7 w-7 text-warning" aria-hidden />;
     title = "Waiting for user consent";

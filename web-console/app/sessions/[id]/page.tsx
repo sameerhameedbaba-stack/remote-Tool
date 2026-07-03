@@ -12,10 +12,10 @@ import { useParams, useRouter } from "next/navigation";
 import { MonitorPlay } from "lucide-react";
 import { RequireAuth, useAuth } from "@/lib/auth";
 import {
-  ApiError,
   endSession,
   getDevice,
   getSession,
+  errorMessage,
   type Device,
   type IceServer,
   type Session,
@@ -25,10 +25,18 @@ import {
   type ClipboardMessage,
   type FileMessage,
   type InputMessage,
-  type MouseButton,
   type PointerAction,
   type SessionConnectionState,
 } from "@/lib/webrtc";
+import {
+  loadStashedIceServers,
+  clearStashedIceServers,
+} from "@/lib/session-connect";
+import {
+  mouseButtonName,
+  modifiersFrom,
+  normalizedCoords,
+} from "@/lib/input-mapping";
 import { ConfirmDialog } from "@/components/ui";
 import { useElapsed } from "@/components/ui";
 import { SessionTopBar } from "@/components/session/SessionTopBar";
@@ -40,32 +48,6 @@ import {
 } from "@/components/session/SessionRightPanel";
 import { ConnectionOverlay } from "@/components/session/ConnectionOverlay";
 
-function mouseButtonName(button: number): MouseButton {
-  if (button === 1) return "middle";
-  if (button === 2) return "right";
-  return "left";
-}
-
-function modifiersFrom(e: ReactKeyboardEvent | KeyboardEvent): string[] {
-  const mods: string[] = [];
-  if (e.ctrlKey) mods.push("ctrl");
-  if (e.shiftKey) mods.push("shift");
-  if (e.altKey) mods.push("alt");
-  if (e.metaKey) mods.push("meta");
-  return mods;
-}
-
-function loadStashedIceServers(sessionId: string): IceServer[] {
-  try {
-    const raw = sessionStorage.getItem(`rs_ice:${sessionId}`);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw) as unknown;
-    return Array.isArray(parsed) ? (parsed as IceServer[]) : [];
-  } catch {
-    return [];
-  }
-}
-
 function SessionContent() {
   const { token, technician } = useAuth();
   const params = useParams<{ id: string }>();
@@ -76,11 +58,16 @@ function SessionContent() {
   const canvasWrapRef = useRef<HTMLDivElement>(null);
   const clientRef = useRef<RemoteSessionClient | null>(null);
   const inputEnabledRef = useRef(false);
+  // Coalesce pointer-move sends to one per animation frame.
+  const pendingMoveRef = useRef<{ x: number; y: number } | null>(null);
+  const moveRafRef = useRef<number | null>(null);
 
   const [session, setSession] = useState<Session | null>(null);
   const [device, setDevice] = useState<Device | null>(null);
   const [connState, setConnState] = useState<SessionConnectionState>("idle");
-  const [error, setError] = useState<string | null>(null);
+  // Errors are captured for logging/activity; the overlay drives what the user
+  // sees, so the value itself isn't rendered directly.
+  const [, setError] = useState<string | null>(null);
   const [ending, setEnding] = useState(false);
   const [ended, setEnded] = useState(false);
   const [bannerAcked, setBannerAcked] = useState(false);
@@ -100,6 +87,8 @@ function SessionContent() {
   const [confirmEnd, setConfirmEnd] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [nonce, setNonce] = useState(0);
+  // Resolved once: stashed ICE servers, or (on reload) the ones GET returns.
+  const [iceServers, setIceServers] = useState<IceServer[] | null>(null);
 
   const elapsed = useElapsed(session?.started_at ?? session?.created_at);
 
@@ -131,19 +120,32 @@ function SessionContent() {
         }
       })
       .catch((err: unknown) =>
-        setError(err instanceof ApiError ? err.message : "Failed to load session"),
+        setError(errorMessage(err, "Failed to load session")),
       );
     return () => {
       disposed = true;
     };
   }, [token, sessionId]);
 
-  // Establish (and re-establish on reconnect) the WebRTC client.
+  // Resolve the ICE servers exactly once: prefer the stash written at connect
+  // time, and fall back to the ice_servers the backend now returns on
+  // GET /sessions/{id} (covers a direct load / page refresh).
   useEffect(() => {
-    if (!token || !sessionId) return;
-    const iceServers = loadStashedIceServers(sessionId);
+    if (!sessionId || iceServers !== null) return;
+    const stashed = loadStashedIceServers(sessionId);
+    if (stashed.length > 0) {
+      setIceServers(stashed);
+      return;
+    }
+    if (session) setIceServers(session.ice_servers ?? []);
+  }, [sessionId, session, iceServers]);
+
+  // Establish (and re-establish on reconnect) the WebRTC client. Gated on ICE
+  // resolution so the fallback source has a chance to load.
+  useEffect(() => {
+    if (!token || !sessionId || iceServers === null) return;
     if (iceServers.length === 0) {
-      appendActivity("Using host ICE candidates (no relay stashed).");
+      appendActivity("Using host ICE candidates (no relay available).");
     }
     const client = new RemoteSessionClient({
       sessionId,
@@ -166,7 +168,10 @@ function SessionContent() {
         onFile: (msg: FileMessage) => appendActivity(`File channel: ${msg.t}`),
         onSessionControl: (env) => {
           appendActivity(`Session control: ${env.payload.action}`);
-          if (env.payload.action === "end") setEnded(true);
+          if (env.payload.action === "end") {
+            setEnded(true);
+            clearStashedIceServers(sessionId);
+          }
         },
         onBanner: (env) => {
           setBannerAcked(!!env.payload.visible);
@@ -185,7 +190,7 @@ function SessionContent() {
       client.close();
       clientRef.current = null;
     };
-  }, [token, sessionId, appendActivity, nonce]);
+  }, [token, sessionId, iceServers, appendActivity, nonce]);
 
   useEffect(() => {
     inputEnabledRef.current = inputEnabled;
@@ -195,22 +200,55 @@ function SessionContent() {
     clientRef.current?.sendInput(message);
   }, []);
 
-  const normalizedCoords = (e: ReactMouseEvent<HTMLVideoElement>) => {
-    const rect = e.currentTarget.getBoundingClientRect();
-    const x = rect.width > 0 ? (e.clientX - rect.left) / rect.width : 0;
-    const y = rect.height > 0 ? (e.clientY - rect.top) / rect.height : 0;
-    return { x: Math.min(1, Math.max(0, x)), y: Math.min(1, Math.max(0, y)) };
-  };
+  // Flush the most-recent coalesced pointer-move (rAF-throttled).
+  const flushMove = useCallback(() => {
+    moveRafRef.current = null;
+    const p = pendingMoveRef.current;
+    pendingMoveRef.current = null;
+    if (p && inputEnabledRef.current) {
+      sendInput({ t: "mouse", x: p.x, y: p.y, action: "move" });
+    }
+  }, [sendInput]);
+
+  useEffect(() => {
+    return () => {
+      if (moveRafRef.current !== null) cancelAnimationFrame(moveRafRef.current);
+    };
+  }, []);
 
   const onMouse = (e: ReactMouseEvent<HTMLVideoElement>, action: PointerAction) => {
     if (!inputEnabledRef.current) return;
-    const { x, y } = normalizedCoords(e);
+    const video = e.currentTarget;
+    const rect = video.getBoundingClientRect();
+    const intrinsic =
+      video.videoWidth > 0 && video.videoHeight > 0
+        ? { width: video.videoWidth, height: video.videoHeight }
+        : null;
+    const coords = normalizedCoords(
+      { x: e.clientX - rect.left, y: e.clientY - rect.top },
+      { width: rect.width, height: rect.height },
+      intrinsic,
+      fit,
+    );
+    // Drop clicks in the letterbox / outside the real content area.
+    if (!coords) return;
+
+    if (action === "move") {
+      // Coalesce: keep only the latest position, send once per frame.
+      pendingMoveRef.current = coords;
+      if (moveRafRef.current === null) {
+        moveRafRef.current = requestAnimationFrame(flushMove);
+      }
+      return;
+    }
+
+    // Down/up are sent immediately (never throttled).
     sendInput({
       t: "mouse",
-      x,
-      y,
+      x: coords.x,
+      y: coords.y,
       action,
-      button: action === "move" ? undefined : mouseButtonName(e.button),
+      button: mouseButtonName(e.button),
     });
   };
 
@@ -262,8 +300,9 @@ function SessionContent() {
       setSession(updated);
       setEnded(true);
       clientRef.current?.close();
+      clearStashedIceServers(sessionId);
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Failed to end session");
+      setError(errorMessage(err, "Failed to end session"));
     } finally {
       setEnding(false);
       setConfirmEnd(false);
@@ -285,8 +324,8 @@ function SessionContent() {
     setNonce((n) => n + 1);
   };
 
-  const openPanel = (tab: string) => {
-    setPanelTab(tab as PanelTab);
+  const openPanel = (tab: PanelTab) => {
+    setPanelTab(tab);
     setPanelOpen(true);
   };
 

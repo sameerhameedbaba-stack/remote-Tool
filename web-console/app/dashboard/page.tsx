@@ -16,15 +16,16 @@ import {
 } from "lucide-react";
 import { RequireAuth, useAuth } from "@/lib/auth";
 import {
-  ApiError,
   createAttendedCode,
-  createSession,
   listDevices,
   listSessions,
+  errorMessage,
+  isNetworkError,
   type AttendedCodeResponse,
   type Device,
   type Session,
 } from "@/lib/api";
+import { startDeviceSession, PRESENCE_POLL_MS } from "@/lib/session-connect";
 import {
   Button,
   Card,
@@ -142,8 +143,8 @@ function DashboardContent() {
         setSessions(sesRes.sessions);
         setError(null);
       } catch (err) {
-        if (err instanceof ApiError && err.code === "network_error") return;
-        setError(err instanceof ApiError ? err.message : "Failed to load data");
+        if (isNetworkError(err)) return;
+        setError(errorMessage(err, "Failed to load data"));
       } finally {
         setLoading(false);
       }
@@ -154,7 +155,7 @@ function DashboardContent() {
   useEffect(() => {
     const controller = new AbortController();
     void load(controller.signal);
-    const id = setInterval(() => void load(), 10_000);
+    const id = setInterval(() => void load(), PRESENCE_POLL_MS);
     return () => {
       controller.abort();
       clearInterval(id);
@@ -178,7 +179,7 @@ function DashboardContent() {
       setAttendedCode(res);
       setLabel("");
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Failed to create code");
+      setError(errorMessage(err, "Failed to create code"));
     } finally {
       setCreatingCode(false);
     }
@@ -188,18 +189,10 @@ function DashboardContent() {
     if (!token) return;
     setConnectingId(device.id);
     try {
-      const res = await createSession(token, device.id);
-      try {
-        sessionStorage.setItem(
-          `rs_ice:${res.session.id}`,
-          JSON.stringify(res.ice_servers),
-        );
-      } catch {
-        /* ignore */
-      }
-      router.push(`/sessions/${res.session.id}`);
+      const session = await startDeviceSession(token, device.id);
+      router.push(`/sessions/${session.id}`);
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Failed to start session");
+      setError(errorMessage(err, "Failed to start session"));
       setConnectingId(null);
     }
   };

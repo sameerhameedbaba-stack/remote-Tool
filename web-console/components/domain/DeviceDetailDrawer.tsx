@@ -31,7 +31,7 @@ import {
   StatusBadge,
 } from "@/components/ui";
 import { OsIcon, osLabel } from "./os";
-import { AUDIT_META } from "./audit-meta";
+import { getAuditMeta } from "./audit-meta";
 import { formatTime, timeAgo } from "@/components/ui";
 
 function DetailRow({ label, value }: { label: string; value: React.ReactNode }) {
@@ -229,7 +229,7 @@ export function DeviceDetailDrawer({
             ) : (
               <ul className="space-y-1">
                 {events.map((e) => {
-                  const meta = AUDIT_META[e.event_type];
+                  const meta = getAuditMeta(e.event_type);
                   return (
                     <li
                       key={e.id}
