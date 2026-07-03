@@ -146,6 +146,18 @@ Component-local build/run instructions:
 [backend](backend-go/README.md) · [agent](agent-rust/README.md) ·
 [console](web-console/README.md).
 
+A root [`Makefile`](Makefile) wraps the three toolchains:
+`make install | build | test | smoke-test | lint | typecheck | format | clean`.
+Operator runbook: [`docs/RUNBOOK.md`](docs/RUNBOOK.md); how to test everything:
+[`docs/TESTING.md`](docs/TESTING.md).
+
+### Engineering audit
+
+A full engineering audit (repo, frontend, backend, agent, integration, security,
+performance, devops, code quality) with the findings and their fixes lives in
+[`docs/audit/`](docs/audit/) — start with
+[`CTO_FINAL_REVIEW.md`](docs/audit/CTO_FINAL_REVIEW.md).
+
 ## 5. How to test an attended session
 
 1. In the console, open **Dashboard → Start attended session**. A one-time code

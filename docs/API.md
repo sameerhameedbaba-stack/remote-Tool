@@ -127,7 +127,8 @@ Response `201`:
 List sessions (most recent first). Query: `status`, `device_id`, `limit` (<=100).
 
 ### `GET /api/v1/sessions/{id}`
-Single session object.
+Single session object, plus an `ice_servers` array (same shape as the
+`POST /sessions` response) so a reloaded session tab can recover relay creds.
 
 ### `POST /api/v1/sessions/{id}/end`
 End an active/pending session. Notifies both peers. Writes audit `session.end`.
@@ -222,7 +223,9 @@ Both sockets exchange newline-free JSON envelopes:
 - `offer` / `answer`: `payload` is the RTCSessionDescription (`{type, sdp}`).
 - `ice-candidate`: `payload` is an RTCIceCandidateInit.
 - `session-control`: `payload.action` in `start|end|approve`. Server→agent
-  `start` tells the agent to display the **banner** and begin capture.
+  `start` tells the agent to display the **banner** and begin capture, and
+  carries `technician_name` (the operator's display name / email) so the banner
+  can name who is connecting.
 - `banner`: agent→server acknowledgement `{"visible":true}`; server records it.
   A session may not enter `active` until the agent confirms the banner is
   visible. There is no hidden/silent mode.

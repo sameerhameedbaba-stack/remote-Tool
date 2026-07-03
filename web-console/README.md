@@ -66,11 +66,19 @@ lib/webrtc.ts        RTCPeerConnection + data-channel client
   to a non-`httpOnly` cookie so a reload rehydrates the session. This is
   readable by JS and therefore XSS-exposed; hardening to a backend-set
   `httpOnly` cookie is tracked in the ROADMAP. See `lib/auth.tsx`.
-- **ICE servers.** `POST /api/v1/sessions` returns the ICE server list;
-  `GET /api/v1/sessions/{id}` does not. The list is carried from the devices
-  page to the session page via `sessionStorage`. On a cold open with no stashed
-  list, the viewer falls back to host candidates only (works on a LAN).
+- **ICE servers.** `POST /api/v1/sessions` returns the ICE server list, carried
+  to the session page via `sessionStorage`. On a cold open (reload / new tab)
+  with no stashed list, the viewer falls back to the `ice_servers` field on
+  `GET /api/v1/sessions/{id}`; the stash is cleared when the session ends. See
+  `lib/session-connect.ts`.
 - **Screen render is real** when the agent publishes a video track; the console
   is the offerer with a `recvonly` video transceiver. Input/clipboard/file
   senders emit protocol JSON over their data channels exactly as specified.
+
+## Further reading
+
+- [`DESIGN_SYSTEM.md`](DESIGN_SYSTEM.md) — tokens, color rules, component states.
+- [`FRONTEND_ARCHITECTURE.md`](FRONTEND_ARCHITECTURE.md) — layering, data flow, a11y.
+- Point-in-time UI redesign artifacts are archived under
+  [`../docs/history/`](../docs/history/).
 ```
