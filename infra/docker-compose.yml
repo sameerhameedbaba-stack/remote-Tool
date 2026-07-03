@@ -1,0 +1,110 @@
+# Remote Support MVP — local/dev orchestration.
+#
+# Brings up: Postgres, Redis, coturn (STUN/TURN), the Go backend, and the
+# Next.js web console. The Windows agent is built and run separately on the
+# endpoint (see agent-rust/README.md).
+#
+# Secrets come from the environment (an .env file next to this compose file,
+# copied from the repo-root .env.example). Nothing secret is committed.
+#
+# Usage:
+#   cp ../.env.example ./.env    # then edit values
+#   docker compose up --build
+
+name: remote-support-mvp
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-remote}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-remote_support}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-remote} -d ${POSTGRES_DB:-remote_support}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [internal]
+
+  redis:
+    image: valkey/valkey:8-alpine
+    restart: unless-stopped
+    command: ["valkey-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [internal]
+
+  coturn:
+    image: coturn/coturn:4.6
+    restart: unless-stopped
+    # Inject secrets from env at runtime; keep the static file for non-secret opts.
+    command: >
+      -c /etc/coturn/turnserver.conf
+      --realm=${TURN_REALM:-remote.local}
+      --user=${TURN_USER:-turnuser}:${TURN_PASSWORD:?set TURN_PASSWORD}
+    volumes:
+      - ./coturn/turnserver.conf:/etc/coturn/turnserver.conf:ro
+    ports:
+      - "3478:3478/udp"
+      - "3478:3478/tcp"
+      - "49160-49200:49160-49200/udp"
+    networks: [internal]
+
+  backend:
+    build:
+      context: ../backend-go
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      APP_ENV: ${APP_ENV:-dev}
+      BACKEND_HTTP_ADDR: ${BACKEND_HTTP_ADDR:-:8080}
+      DATABASE_URL: ${DATABASE_URL:-postgres://remote:${POSTGRES_PASSWORD}@postgres:5432/remote_support?sslmode=disable}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET (>=32 bytes)}
+      JWT_TTL: ${JWT_TTL:-3600s}
+      AGENT_ENROLLMENT_TOKEN: ${AGENT_ENROLLMENT_TOKEN:?set AGENT_ENROLLMENT_TOKEN}
+      SESSION_CODE_TTL: ${SESSION_CODE_TTL:-300s}
+      SESSION_CODE_LENGTH: ${SESSION_CODE_LENGTH:-9}
+      CORS_ALLOWED_ORIGIN: ${CORS_ALLOWED_ORIGIN:-http://localhost:3000}
+      SEED_TECH_EMAIL: ${SEED_TECH_EMAIL:-}
+      SEED_TECH_PASSWORD: ${SEED_TECH_PASSWORD:-}
+      ICE_SERVERS: ${ICE_SERVERS:-["stun:coturn:3478","turn:coturn:3478"]}
+      TURN_USER: ${TURN_USER:-turnuser}
+      TURN_PASSWORD: ${TURN_PASSWORD}
+    ports:
+      - "8080:8080"
+    networks: [internal]
+
+  web-console:
+    build:
+      context: ../web-console
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      - backend
+    environment:
+      # NEXT_PUBLIC_* are baked at build time; also passed at runtime for clarity.
+      NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:8080}
+      NEXT_PUBLIC_WS_BASE_URL: ${NEXT_PUBLIC_WS_BASE_URL:-ws://localhost:8080}
+    ports:
+      - "3000:3000"
+    networks: [internal]
+
+networks:
+  internal:
+    driver: bridge
+
+volumes:
+  pgdata:
