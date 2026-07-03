@@ -92,6 +92,7 @@ export function TopBar() {
           <button
             onClick={() => setMenuOpen((o) => !o)}
             className="flex items-center gap-2 rounded-lg py-1 pl-1 pr-2 transition-colors hover:bg-surface-hover"
+            aria-label="Account menu"
             aria-haspopup="menu"
             aria-expanded={menuOpen}
           >

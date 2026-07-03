@@ -39,7 +39,10 @@ export function CommandPalette() {
   const [loading, setLoading] = useState(false);
   const [connectingId, setConnectingId] = useState<string | null>(null);
   const [active, setActive] = useState(0);
+  const [mounted, setMounted] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => setMounted(true), []);
 
   // Global hotkey.
   useEffect(() => {
@@ -153,16 +156,13 @@ export function CommandPalette() {
     }
   };
 
-  if (!open || !token) return null;
+  // Render the portal inline (NOT via a nested component) so the search input
+  // keeps focus across keystrokes — a nested component defined during render
+  // gets a new identity each time and would remount the subtree.
+  if (!open || !token || !mounted) return null;
 
-  return <PaletteBody />;
-
-  function PaletteBody() {
-    const [mounted, setMounted] = useState(false);
-    useEffect(() => setMounted(true), []);
-    if (!mounted) return null;
-    return createPortal(
-      <div className="fixed inset-0 z-[120] flex items-start justify-center px-4 pt-[12vh]">
+  return createPortal(
+    <div className="fixed inset-0 z-[120] flex items-start justify-center px-4 pt-[12vh]">
         <div
           className="absolute inset-0 bg-black/50 animate-fade-in"
           onClick={() => setOpen(false)}
@@ -269,7 +269,6 @@ export function CommandPalette() {
           </div>
         </div>
       </div>,
-      document.body,
-    );
-  }
+    document.body,
+  );
 }
