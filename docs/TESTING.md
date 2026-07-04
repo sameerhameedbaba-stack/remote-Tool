@@ -5,13 +5,22 @@ How to run every automated suite for the Remote Support MVP, what each covers, a
 ## Quick start
 
 ```bash
-make test          # full suite  -> bash test/run-all.sh
-make smoke-test    # fast        -> bash test/run-all.sh --quick  (skips browser E2E)
+make test          # full suite   -> bash test/run-all.sh
+make test-quick    # skip browser E2E -> bash test/run-all.sh --quick
+make smoke-test    # seconds       -> boot backend, check health/auth/self-probe
+make bench         # performance benchmarks (rate limiter)
 
 # or directly:
 bash test/run-all.sh
 bash test/run-all.sh --quick
+bash test/smoke.sh
 ```
+
+A full mapping of every test **category** (smoke, unit, integration, API, E2E,
+connection-stability, reconnect, remote-input, screen-streaming, RBAC, auth,
+security, regression, performance, installer) to the concrete tests that cover
+it — and an honest list of what is Windows-manual-only — is in
+[`audit/TEST_COVERAGE_MATRIX.md`](audit/TEST_COVERAGE_MATRIX.md).
 
 Everything runs on **local binaries — no Docker daemon required.** The integration suite provisions its own Postgres + Redis via `test/lib/provision.sh`; the E2E suites launch a real backend, a real Rust agent, and a headless browser peer.
 
@@ -19,10 +28,10 @@ Everything runs on **local binaries — no Docker daemon required.** The integra
 
 | # | Suite | Command | What it covers |
 |---|-------|---------|----------------|
-| 1 | Rust agent unit | `cd agent-rust && cargo test` | 44 tests: config precedence, ICE env parse, `input::apply`, session-state transitions, file-chunk validation, reconnect/teardown logic |
+| 1 | Rust agent unit | `cd agent-rust && cargo test` | 45 tests: config precedence, ICE env parse, `input::apply`, session-state transitions, file-chunk validation, reconnect backoff (capped/jittered) |
 | 2 | Go backend unit | `cd backend-go && go test ./...` | service (ownership/allowlist/sanitize), auth, ratelimit, config, signal — no infra needed |
 | 3 | Web console build | `cd web-console && npm run build` | production build, 11 routes, `tsc` type-check |
-| 4 | Go backend integration | `cd backend-go && go test -tags=integration ./internal/integration/...` (real PG+Redis) | 18 tests: enrollment, presence online→offline + status filter, session lifecycle + `session.end` audit/idempotency, attended code single-use/TTL, `/agent/events` sanitization, GET /devices/{id} + /sessions, malformed-UUID→400, TOCTOU unique index |
+| 4 | Go backend integration | `cd backend-go && go test -tags=integration ./internal/integration/...` (real PG+Redis) | 20 tests: enrollment, presence online→offline + status filter, session lifecycle + `session.end` audit/idempotency, attended code single-use/TTL, `/agent/events` sanitization, GET /devices/{id} + /sessions, malformed-UUID→400, TOCTOU unique index, **token-realm isolation (RBAC)**, **SQL-injection-safe search** |
 | 5 | E2E WebRTC | `bash test/run-e2e.sh` | real backend + real Rust agent + browser peer: 3 data channels + all 6 audit event types (`session.request/start/end`, `file.transfer`, `clipboard.sync`, `input.command_attempt`) |
 | 6 | Console UI E2E | `bash test/run-console-e2e.sh` | real backend + browser: 6 console flows |
 

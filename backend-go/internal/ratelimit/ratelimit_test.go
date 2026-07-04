@@ -64,3 +64,26 @@ func TestPerKeyIsolation(t *testing.T) {
 		t.Fatal("key a second should be denied")
 	}
 }
+
+// BenchmarkAllowHotKey is the steady-state hot path (one repeated source IP).
+func BenchmarkAllowHotKey(b *testing.B) {
+	l := New(1000, 1000)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		l.Allow("10.0.0.1")
+	}
+}
+
+// BenchmarkAllowAtCapacity is the adversarial path this limiter defends: a
+// high-cardinality flood keeping the bucket map at its ceiling. The eviction
+// fix must keep Allow near O(1) here rather than degrading to an O(n) scan.
+func BenchmarkAllowAtCapacity(b *testing.B) {
+	l := New(1, 5)
+	for i := 0; i < maxTrackedKeys; i++ { // fill to the ceiling
+		l.Allow("seed-" + strconv.Itoa(i))
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		l.Allow("flood-" + strconv.Itoa(i)) // always a new key → forces eviction
+	}
+}

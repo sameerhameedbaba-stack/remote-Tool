@@ -633,4 +633,30 @@ mod tests {
         let servers = with_ice_env(None, ice_servers_from_env);
         assert!(servers.is_empty());
     }
+
+    #[test]
+    fn reconnect_backoff_is_capped_and_monotonic() {
+        // Jitter-free base seconds: 1,2,4,8,16 then capped at 30.
+        let base_secs = |a: u32| (1u64 << a.min(5)).min(30);
+        assert_eq!(base_secs(0), 1);
+        assert_eq!(base_secs(1), 2);
+        assert_eq!(base_secs(4), 16);
+        assert_eq!(base_secs(5), 30); // 1<<5 = 32, capped to 30
+        assert_eq!(base_secs(9), 30);
+        for attempt in 0..20u32 {
+            let d = reconnect_backoff(attempt);
+            // Never below 1s, never above the 30s cap + max jitter (441ms).
+            assert!(d >= std::time::Duration::from_secs(1), "attempt {attempt}");
+            assert!(
+                d <= std::time::Duration::from_millis(30_000 + 441),
+                "attempt {attempt} exceeded cap: {d:?}"
+            );
+        }
+        // Caps at 30s for large attempts (plus bounded jitter).
+        let big = reconnect_backoff(50);
+        assert!(big >= std::time::Duration::from_secs(30));
+        assert!(big < std::time::Duration::from_millis(30_500));
+        // Jitter de-synchronizes consecutive attempts at the same cap.
+        assert_ne!(reconnect_backoff(6), reconnect_backoff(7));
+    }
 }

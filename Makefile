@@ -14,7 +14,7 @@
 #   make clean       remove build artifacts
 
 .DEFAULT_GOAL := help
-.PHONY: help install build test smoke-test lint typecheck format clean \
+.PHONY: help install build test test-quick smoke-test bench lint typecheck format clean \
         build-agent build-backend build-web
 
 AGENT   := agent-rust
@@ -44,8 +44,14 @@ build-web:
 test: ## Run the full test suite (unit + integration + e2e)
 	bash test/run-all.sh
 
-smoke-test: ## Fast smoke test (skips the heavy browser e2e)
+test-quick: ## Full suite minus the two browser E2E suites
 	bash test/run-all.sh --quick
+
+smoke-test: ## Boot the backend + verify health/auth/self-probe (seconds)
+	bash test/smoke.sh
+
+bench: ## Run performance benchmarks (rate limiter hot + at-capacity paths)
+	cd $(BACKEND) && go test -run='^$$' -bench=. -benchmem ./internal/ratelimit/
 
 lint: ## Lint all stacks (clippy -D warnings, go vet, eslint)
 	cd $(AGENT)   && cargo clippy --all-targets -- -D warnings
