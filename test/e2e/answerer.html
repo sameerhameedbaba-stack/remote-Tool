@@ -15,6 +15,9 @@ window.__e2e = {
   wsOpen: false, offerReceived: false, answered: false,
   channels: { input: false, clipboard: false, file: false },
   messagesSent: false, connState: 'new', error: null,
+  // Screen-stream verification: proves the agent's capture→JPEG→chunk pipeline
+  // reassembles and decodes to a real image in the browser.
+  screen: { received: false, decoded: false, width: 0, height: 0, frames: 0 },
 };
 
 function log(...a) {
@@ -41,10 +44,49 @@ window.__connect = function (sessionId, token, wsBase) {
 
     pc.oniceconnectionstatechange = () => log('ice', pc.iceConnectionState);
 
+    // Screen-frame reassembly (mirrors web-console/lib/webrtc.ts).
+    const screenAsm = { id: null, count: 0, got: 0, parts: [], w: 0, h: 0 };
+    function onScreenChunk(buf) {
+      if (buf.byteLength < 12) return;
+      const dv = new DataView(buf);
+      const frameId = dv.getUint32(0, true);
+      const index = dv.getUint16(4, true);
+      const count = dv.getUint16(6, true);
+      const width = dv.getUint16(8, true);
+      const height = dv.getUint16(10, true);
+      window.__e2e.screen.received = true;
+      if (screenAsm.id !== frameId) {
+        screenAsm.id = frameId; screenAsm.count = count; screenAsm.got = 0;
+        screenAsm.parts = new Array(count); screenAsm.w = width; screenAsm.h = height;
+      }
+      if (!screenAsm.parts[index]) {
+        screenAsm.parts[index] = new Uint8Array(buf.slice(12));
+        screenAsm.got++;
+      }
+      if (screenAsm.got === screenAsm.count) {
+        const total = screenAsm.parts.reduce((n, p) => n + p.byteLength, 0);
+        const jpeg = new Uint8Array(total);
+        let off = 0; for (const p of screenAsm.parts) { jpeg.set(p, off); off += p.byteLength; }
+        createImageBitmap(new Blob([jpeg], { type: 'image/jpeg' })).then((bmp) => {
+          const w = bmp.width, h = bmp.height; // capture before close() zeroes them
+          window.__e2e.screen.decoded = true;
+          window.__e2e.screen.width = w;
+          window.__e2e.screen.height = h;
+          window.__e2e.screen.frames++;
+          bmp.close();
+          log('screen frame decoded', w + 'x' + h);
+        }).catch((e) => log('screen decode failed', String(e)));
+      }
+    }
+
     pc.ondatachannel = (ev) => {
       const dc = ev.channel;
       chans[dc.label] = dc;
       log('ondatachannel', dc.label);
+      if (dc.label === 'screen') {
+        dc.binaryType = 'arraybuffer';
+        dc.onmessage = (m) => { if (m.data instanceof ArrayBuffer) onScreenChunk(m.data); };
+      }
       dc.onopen = () => {
         window.__e2e.channels[dc.label] = true;
         log('open', dc.label);

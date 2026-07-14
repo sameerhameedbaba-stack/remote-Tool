@@ -34,7 +34,19 @@ pub trait ScreenSource: Send {
 }
 
 /// Construct the platform screen source for the primary display.
+///
+/// If `REMOTE_AGENT_CAPTURE_TEST_PATTERN` is set, a synthetic moving test
+/// pattern is used instead of real capture (any platform). This is a diagnostic
+/// aid — clearly not real screen content — used by the end-to-end test to
+/// exercise the full encode→chunk→channel→decode pipeline on Linux CI where
+/// there is no desktop to capture. It is never selected in normal operation.
 pub fn open_primary_display() -> Result<Box<dyn ScreenSource>> {
+    if std::env::var_os("REMOTE_AGENT_CAPTURE_TEST_PATTERN").is_some() {
+        tracing::warn!(
+            "using synthetic capture test pattern (diagnostic; not real screen content)"
+        );
+        return Ok(Box::new(TestPatternSource::new()));
+    }
     #[cfg(windows)]
     {
         Ok(Box::new(windows_capture::GdiCapture::new()?))
@@ -42,6 +54,59 @@ pub fn open_primary_display() -> Result<Box<dyn ScreenSource>> {
     #[cfg(not(windows))]
     {
         Ok(Box::new(NullScreenSource))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Synthetic test pattern (diagnostic only, env-gated)
+// ---------------------------------------------------------------------------
+/// A 320×240 BGRA source that paints a gradient plus a moving box so successive
+/// frames differ (real JPEG content, not a flat fill). Not real screen capture.
+struct TestPatternSource {
+    frame: u64,
+    start: std::time::Instant,
+}
+
+impl TestPatternSource {
+    const W: u32 = 320;
+    const H: u32 = 240;
+    fn new() -> Self {
+        Self {
+            frame: 0,
+            start: std::time::Instant::now(),
+        }
+    }
+}
+
+impl ScreenSource for TestPatternSource {
+    fn dimensions(&self) -> (u32, u32) {
+        (Self::W, Self::H)
+    }
+    fn next_frame(&mut self) -> Result<Option<RawFrame>> {
+        let (w, h) = (Self::W as usize, Self::H as usize);
+        let mut bgra = vec![0u8; w * h * 4];
+        let t = self.frame;
+        // A moving box position derived from the frame counter.
+        let bx = (t as usize * 4) % w;
+        let by = (t as usize * 3) % h;
+        for y in 0..h {
+            for x in 0..w {
+                let i = (y * w + x) * 4;
+                let in_box = x >= bx && x < bx + 40 && y >= by && y < by + 40;
+                // BGRA: gradient background, white moving box.
+                bgra[i] = if in_box { 255 } else { (x * 255 / w) as u8 }; // B
+                bgra[i + 1] = if in_box { 255 } else { (y * 255 / h) as u8 }; // G
+                bgra[i + 2] = if in_box { 255 } else { 64 }; // R
+                bgra[i + 3] = 255; // A
+            }
+        }
+        self.frame = self.frame.wrapping_add(1);
+        Ok(Some(RawFrame {
+            width: Self::W,
+            height: Self::H,
+            bgra,
+            timestamp_us: self.start.elapsed().as_micros() as u64,
+        }))
     }
 }
 

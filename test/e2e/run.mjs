@@ -132,6 +132,18 @@ async function main() {
     console.log('[e2e] note: connState =', st.connState);
   }
 
+  // 6b. Assert the screen stream works end to end: the agent's synthetic capture
+  //     was JPEG-encoded, chunked over the `screen` channel, reassembled, and
+  //     decoded to a real ImageBitmap of the expected size in the browser.
+  const screen = await poll('screen frame decoded', 15000, async () => {
+    const s = await page.evaluate(() => window.__e2e.screen);
+    return s.decoded ? s : null;
+  });
+  if (screen.width !== 320 || screen.height !== 240) {
+    throw new Error(`decoded screen frame has wrong size: ${screen.width}x${screen.height}`);
+  }
+  console.log(`[e2e] screen stream verified: decoded ${screen.frames} frame(s) at ${screen.width}x${screen.height}`);
+
   // 7. Let the immediate clipboard/file reports land, then end the session so
   //    the agent flushes its aggregated input counter.
   await sleep(1500);
@@ -150,7 +162,7 @@ async function main() {
 
   await browser.close();
   pageServer.close();
-  console.log('\nE2E PASS: real backend + real Rust agent + browser WebRTC peer — data channels established and all three audit events persisted.');
+  console.log('\nE2E PASS: real backend + real Rust agent + browser WebRTC peer — data channels established, screen frame decoded, and all three audit events persisted.');
 }
 
 main().catch((e) => {
