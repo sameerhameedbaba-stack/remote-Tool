@@ -55,7 +55,10 @@ function SessionContent() {
   const sessionId = params.id;
 
   const videoRef = useRef<HTMLVideoElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
   const canvasWrapRef = useRef<HTMLDivElement>(null);
+  const hasScreenRef = useRef(false);
+  const [hasScreen, setHasScreen] = useState(false);
   const clientRef = useRef<RemoteSessionClient | null>(null);
   const inputEnabledRef = useRef(false);
   // Coalesce pointer-move sends to one per animation frame.
@@ -147,6 +150,9 @@ function SessionContent() {
     if (iceServers.length === 0) {
       appendActivity("Using host ICE candidates (no relay available).");
     }
+    // Fresh connection: no screen frames yet.
+    hasScreenRef.current = false;
+    setHasScreen(false);
     const client = new RemoteSessionClient({
       sessionId,
       token,
@@ -156,6 +162,24 @@ function SessionContent() {
           if (videoRef.current) {
             videoRef.current.srcObject = stream;
             void videoRef.current.play().catch(() => undefined);
+          }
+        },
+        onScreenFrame: (bitmap, w, h) => {
+          const canvas = canvasRef.current;
+          if (!canvas) {
+            bitmap.close();
+            return;
+          }
+          if (canvas.width !== w || canvas.height !== h) {
+            canvas.width = w;
+            canvas.height = h;
+          }
+          const ctx = canvas.getContext("2d");
+          if (ctx) ctx.drawImage(bitmap, 0, 0);
+          bitmap.close();
+          if (!hasScreenRef.current) {
+            hasScreenRef.current = true;
+            setHasScreen(true);
           }
         },
         onState: (state) => setConnState(state),
@@ -216,13 +240,14 @@ function SessionContent() {
     };
   }, []);
 
-  const onMouse = (e: ReactMouseEvent<HTMLVideoElement>, action: PointerAction) => {
+  const onMouse = (e: ReactMouseEvent<HTMLCanvasElement>, action: PointerAction) => {
     if (!inputEnabledRef.current) return;
-    const video = e.currentTarget;
-    const rect = video.getBoundingClientRect();
+    const canvas = e.currentTarget;
+    const rect = canvas.getBoundingClientRect();
+    // Canvas intrinsic size == the remote frame size, so letterbox math is exact.
     const intrinsic =
-      video.videoWidth > 0 && video.videoHeight > 0
-        ? { width: video.videoWidth, height: video.videoHeight }
+      canvas.width > 0 && canvas.height > 0
+        ? { width: canvas.width, height: canvas.height }
         : null;
     const coords = normalizedCoords(
       { x: e.clientX - rect.left, y: e.clientY - rect.top },
@@ -385,17 +410,26 @@ function SessionContent() {
               onKeyUp={(e) => onKey(e, "up")}
               className="absolute inset-0 outline-none"
             >
-              <video
-                ref={videoRef}
+              {/* Primary display: the agent streams JPEG frames over the
+                  `screen` data channel, drawn here. object-fit letterboxes the
+                  canvas so input coords map exactly (see onMouse). */}
+              <canvas
+                ref={canvasRef}
                 className="h-full w-full bg-black"
                 style={{ objectFit: fit }}
-                autoPlay
-                playsInline
-                muted
                 onContextMenu={(e) => e.preventDefault()}
                 onMouseDown={(e) => onMouse(e, "down")}
                 onMouseUp={(e) => onMouse(e, "up")}
                 onMouseMove={(e) => onMouse(e, "move")}
+              />
+              {/* Fallback for a future codec-based media track; hidden while the
+                  MJPEG canvas path is the delivery mechanism. */}
+              <video
+                ref={videoRef}
+                className="hidden"
+                autoPlay
+                playsInline
+                muted
               />
             </div>
 
@@ -407,8 +441,8 @@ function SessionContent() {
               onBack={() => router.push("/devices")}
             />
 
-            {/* Idle-video hint when connected but no track yet. */}
-            {connState === "connected" && (
+            {/* Hint while connected but the first screen frame hasn't arrived. */}
+            {connState === "connected" && !hasScreen && (
               <div className="pointer-events-none absolute left-1/2 top-1/2 flex -translate-x-1/2 -translate-y-1/2 flex-col items-center gap-2 text-center text-fg-muted">
                 <MonitorPlay className="h-8 w-8" aria-hidden />
                 <p className="text-[13px]">

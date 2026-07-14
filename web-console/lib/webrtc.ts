@@ -102,6 +102,8 @@ export type SessionConnectionState =
 
 export interface RemoteSessionCallbacks {
   onTrack?: (stream: MediaStream) => void;
+  /** A decoded screen frame from the agent's `screen` data channel. */
+  onScreenFrame?: (bitmap: ImageBitmap, width: number, height: number) => void;
   onState?: (state: SessionConnectionState) => void;
   onClipboard?: (message: ClipboardMessage) => void;
   onFile?: (message: FileMessage) => void;
@@ -110,6 +112,11 @@ export interface RemoteSessionCallbacks {
   onError?: (message: string) => void;
   onLog?: (line: string) => void;
 }
+
+// Wire format of each `screen` channel chunk (little-endian), matching the Rust
+// agent's `encode` module: frame_id u32 | index u16 | count u16 | w u16 | h u16
+// | jpeg bytes.
+const SCREEN_HEADER_LEN = 12;
 
 export interface RemoteSessionOptions {
   sessionId: string;
@@ -132,6 +139,15 @@ export class RemoteSessionClient {
   private inputChannel: RTCDataChannel | null = null;
   private clipboardChannel: RTCDataChannel | null = null;
   private fileChannel: RTCDataChannel | null = null;
+  private screenChannel: RTCDataChannel | null = null;
+
+  // Screen-frame reassembly: buffer the chunks of the in-progress frame.
+  private screenFrameId: number | null = null;
+  private screenChunks: (Uint8Array | undefined)[] = [];
+  private screenChunkCount = 0;
+  private screenReceived = 0;
+  private screenDims: { w: number; h: number } = { w: 0, h: 0 };
+  private screenDecoding = false;
 
   private remoteStream: MediaStream | null = null;
   private closed = false;
@@ -192,6 +208,10 @@ export class RemoteSessionClient {
           this.fileChannel = dc;
           this.wireFileChannel();
           break;
+        case "screen":
+          this.screenChannel = dc;
+          this.wireScreenChannel();
+          break;
         default:
           this.log(`ignoring unknown data channel: ${dc.label}`);
       }
@@ -244,6 +264,78 @@ export class RemoteSessionClient {
         this.cb.onFile?.(msg);
       }
     };
+  }
+
+  // Reassembles JPEG frames from the agent's `screen` channel and decodes them
+  // to ImageBitmaps for a canvas. Binary chunks carry a 12-byte header; a new
+  // frame_id discards any incomplete previous frame (we only ever show the
+  // latest complete frame — stale partials are dropped, never rendered).
+  private wireScreenChannel(): void {
+    const dc = this.screenChannel;
+    if (!dc) return;
+    dc.binaryType = "arraybuffer";
+    this.log("screen channel open; awaiting frames");
+    dc.onmessage = (event: MessageEvent<ArrayBuffer>) => {
+      if (!(event.data instanceof ArrayBuffer)) return;
+      const buf = new Uint8Array(event.data);
+      if (buf.byteLength < SCREEN_HEADER_LEN) return;
+      const view = new DataView(event.data);
+      const frameId = view.getUint32(0, true);
+      const index = view.getUint16(4, true);
+      const count = view.getUint16(6, true);
+      const width = view.getUint16(8, true);
+      const height = view.getUint16(10, true);
+      if (count === 0 || index >= count) return;
+
+      // Starting a new frame: reset the assembler.
+      if (this.screenFrameId !== frameId) {
+        this.screenFrameId = frameId;
+        this.screenChunkCount = count;
+        this.screenChunks = new Array(count).fill(undefined);
+        this.screenReceived = 0;
+        this.screenDims = { w: width, h: height };
+      }
+      if (this.screenChunks[index] === undefined) {
+        this.screenChunks[index] = buf.subarray(SCREEN_HEADER_LEN);
+        this.screenReceived += 1;
+      }
+      if (this.screenReceived === this.screenChunkCount) {
+        this.decodeScreenFrame();
+      }
+    };
+  }
+
+  private decodeScreenFrame(): void {
+    // Coalesce: if a decode is already in flight, skip — a fresher frame will
+    // arrive shortly (this is a live stream, not a reliable delivery).
+    if (this.screenDecoding) return;
+    const parts = this.screenChunks;
+    const { w, h } = this.screenDims;
+    if (parts.some((p) => p === undefined)) return;
+    const total = parts.reduce((n, p) => n + (p?.byteLength ?? 0), 0);
+    const jpeg = new Uint8Array(total);
+    let off = 0;
+    for (const p of parts) {
+      if (p) {
+        jpeg.set(p, off);
+        off += p.byteLength;
+      }
+    }
+    this.screenDecoding = true;
+    const blob = new Blob([jpeg], { type: "image/jpeg" });
+    createImageBitmap(blob)
+      .then((bitmap) => {
+        this.screenDecoding = false;
+        if (this.closed) {
+          bitmap.close();
+          return;
+        }
+        this.cb.onScreenFrame?.(bitmap, w, h);
+      })
+      .catch((err) => {
+        this.screenDecoding = false;
+        this.log(`screen frame decode failed: ${String(err)}`);
+      });
   }
 
   // --- Signaling ---
