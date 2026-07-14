@@ -65,9 +65,9 @@ enum Command {
         #[arg(long)]
         name: Option<String>,
     },
-    /// Register the Windows service (cfg-gated; no-op stub elsewhere).
+    /// Register the agent to auto-start at logon (Windows; no-op elsewhere).
     Install,
-    /// Unregister the Windows service (cfg-gated; no-op stub elsewhere).
+    /// Remove the auto-start registration (Windows; no-op elsewhere).
     Uninstall,
 }
 
@@ -91,7 +91,7 @@ async fn main() -> Result<()> {
         Command::Service => run_service(cfg).await,
         Command::Portable => run_portable(cfg).await,
         Command::Enroll { name } => run_enroll(cfg, name).await,
-        Command::Install => run_install(),
+        Command::Install => run_install(&cfg),
         Command::Uninstall => run_uninstall(),
     }
 }
@@ -557,17 +557,37 @@ fn ice_servers_from_env() -> Vec<IceServerConfig> {
 // ---------------------------------------------------------------------------
 // install / uninstall (Windows service; cfg-gated)
 // ---------------------------------------------------------------------------
-fn run_install() -> Result<()> {
+/// Auto-start registry value name under HKCU\...\Run.
+#[cfg(windows)]
+const AUTOSTART_NAME: &str = "RemoteSupportAgent";
+
+fn run_install(cfg: &Config) -> Result<()> {
     #[cfg(windows)]
     {
-        // TODO: register the Windows service via the SCM
-        // (`CreateServiceW` / `sc create`), pointing at this binary with the
-        // `service` subcommand, plus a service main dispatch. Not implemented.
-        tracing::warn!("Windows service install is a TODO stub (SCM registration not implemented)");
+        // Register the agent to auto-start (as the logged-in user) via the HKCU
+        // Run key, launching `service` mode with the resolved backend URLs baked
+        // in (non-secret). The device token is loaded at runtime from the
+        // DPAPI-protected store — it is never placed in the registry. A per-user
+        // startup is chosen over a session-0 Windows service because GDI screen
+        // capture requires an interactive desktop session.
+        let exe = std::env::current_exe().context("resolving current exe path")?;
+        let command = format!(
+            "\"{}\" service --api-base \"{}\" --ws-base \"{}\"",
+            exe.display(),
+            cfg.api_base,
+            cfg.ws_base
+        );
+        win_autostart::set(AUTOSTART_NAME, &command)?;
+        tracing::info!(
+            command,
+            "auto-start registered (HKCU Run); agent starts at logon"
+        );
+        println!("Installed: the agent will start automatically at logon.");
         Ok(())
     }
     #[cfg(not(windows))]
     {
+        let _ = cfg;
         eprintln!("`install` is a Windows-only operation; this is a non-Windows build (no-op).");
         Ok(())
     }
@@ -576,13 +596,88 @@ fn run_install() -> Result<()> {
 fn run_uninstall() -> Result<()> {
     #[cfg(windows)]
     {
-        // TODO: `DeleteService` after stopping it. Not implemented.
-        tracing::warn!("Windows service uninstall is a TODO stub (SCM removal not implemented)");
+        win_autostart::remove(AUTOSTART_NAME)?;
+        tracing::info!("auto-start removed (HKCU Run)");
+        println!("Uninstalled: the agent will no longer start automatically.");
         Ok(())
     }
     #[cfg(not(windows))]
     {
         eprintln!("`uninstall` is a Windows-only operation; this is a non-Windows build (no-op).");
+        Ok(())
+    }
+}
+
+/// Manages the HKCU auto-start Run key. Small, self-contained Win32 registry
+/// wrapper so the install/uninstall paths are real and compile-verified.
+#[cfg(windows)]
+mod win_autostart {
+    use anyhow::{anyhow, Result};
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::ERROR_SUCCESS;
+    use windows::Win32::System::Registry::{
+        RegCloseKey, RegCreateKeyExW, RegDeleteValueW, RegSetValueExW, HKEY, HKEY_CURRENT_USER,
+        KEY_SET_VALUE, REG_OPTION_NON_VOLATILE, REG_SZ,
+    };
+
+    const RUN_KEY: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+
+    fn wide(s: &str) -> Vec<u16> {
+        s.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    fn open_run_key() -> Result<HKEY> {
+        let sub = wide(RUN_KEY);
+        let mut hkey = HKEY::default();
+        let rc = unsafe {
+            RegCreateKeyExW(
+                HKEY_CURRENT_USER,
+                PCWSTR(sub.as_ptr()),
+                0,
+                PCWSTR::null(),
+                REG_OPTION_NON_VOLATILE,
+                KEY_SET_VALUE,
+                None,
+                &mut hkey,
+                None,
+            )
+        };
+        if rc != ERROR_SUCCESS {
+            return Err(anyhow!("RegCreateKeyExW(Run) failed: {:?}", rc));
+        }
+        Ok(hkey)
+    }
+
+    pub fn set(name: &str, command: &str) -> Result<()> {
+        let hkey = open_run_key()?;
+        let name_w = wide(name);
+        // Store the command as a NUL-terminated UTF-16 REG_SZ (byte view).
+        let data_w = wide(command);
+        let bytes: &[u8] =
+            unsafe { std::slice::from_raw_parts(data_w.as_ptr() as *const u8, data_w.len() * 2) };
+        let rc = unsafe { RegSetValueExW(hkey, PCWSTR(name_w.as_ptr()), 0, REG_SZ, Some(bytes)) };
+        unsafe {
+            let _ = RegCloseKey(hkey);
+        }
+        if rc != ERROR_SUCCESS {
+            return Err(anyhow!("RegSetValueExW failed: {:?}", rc));
+        }
+        Ok(())
+    }
+
+    pub fn remove(name: &str) -> Result<()> {
+        let hkey = open_run_key()?;
+        let name_w = wide(name);
+        let rc = unsafe { RegDeleteValueW(hkey, PCWSTR(name_w.as_ptr())) };
+        unsafe {
+            let _ = RegCloseKey(hkey);
+        }
+        // Deleting a non-existent value is fine (idempotent uninstall).
+        if rc != ERROR_SUCCESS && rc.0 != 2
+        /* ERROR_FILE_NOT_FOUND */
+        {
+            return Err(anyhow!("RegDeleteValueW failed: {:?}", rc));
+        }
         Ok(())
     }
 }

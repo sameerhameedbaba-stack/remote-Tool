@@ -69,32 +69,40 @@ banner). CI runs all of it (`.github/workflows/ci.yml`). See
 The only things not automated require a Windows host (screen capture, input
 injection, native banner, DPAPI) — see §2/§3.
 
-## 2. What's stubbed (interfaces present, honestly marked, never faked)
+## 2. Windows data plane — implemented, compile-verified, runtime-pending
 
-These are the low-level remote-control internals. Each is an explicit `TODO`
-with a defined interface — **no fabricated data**:
+The remote-control internals are now **implemented for Windows** and
+**compile-checked for `x86_64-pc-windows-gnu`** from the Linux dev host (via a
+mingw cross-check), plus packaged into a downloadable installer by the
+[Windows agent CI](.github/workflows/windows-agent.yml). Their *runtime*
+behavior must be confirmed on a real Windows machine — that is what the
+installer is for (see [`installer/README.md`](installer/README.md)).
 
-- **Screen capture** (`agent-rust/src/capture.rs`) — `ScreenSource` trait;
-  Windows DXGI Desktop Duplication not implemented.
-- **WebRTC media track** (`agent-rust/src/webrtc.rs`) — `attach_screen_track`
-  stub; the encode + sample pump is TODO. Data channels + offer/answer/ICE are
-  real.
-- **Input injection** (`agent-rust/src/input.rs`) — Windows `SendInput` stub;
-  **input validation is real** on all platforms.
+- **Screen capture** (`agent-rust/src/capture.rs`) — real GDI `BitBlt` of the
+  primary display → BGRA frame. (DXGI is a future perf optimization.)
+- **Screen streaming** (`agent-rust/src/encode.rs`, `webrtc.rs`) — JPEG-encoded
+  frames chunked over a `screen` data channel; the console decodes them to a
+  canvas. **The full encode→chunk→channel→decode pipeline is verified end-to-end
+  on Linux CI** with a synthetic capture source (`decoded 1 frame at 320x240`).
+- **Input injection** (`agent-rust/src/input.rs`) — real `SendInput` (mouse
+  absolute move/click, keyboard VK up/down with modifier bracketing). Validation
+  is real on all platforms.
+- **Native banner window** (`agent-rust/src/banner.rs`) — real always-on-top,
+  non-closable red Win32 bar naming the technician; the mandatory console banner
+  is still emitted too, so visibility is never skipped.
+- **DPAPI token storage** (`agent-rust/src/token_store.rs`) — real
+  `CryptProtectData`; non-Windows uses a documented **insecure `0600` file
+  fallback** for dev only.
+- **Install / auto-start** (`agent-rust/src/main.rs`) — `install`/`uninstall`
+  register a per-user HKCU `Run` auto-start (chosen over a session-0 service so
+  capture has an interactive desktop).
+
+Still stubbed (honestly, no fabricated data):
+
 - **Clipboard OS get/set** (`agent-rust/src/clipboard.rs`) — Windows
-  `CF_UNICODETEXT` stub; **validation is real**.
-- **Native banner window** (`agent-rust/src/banner.rs`) — always-on-top Win32
-  window is TODO; a **mandatory non-suppressible console banner is always shown**
-  so visibility is never skipped.
-- **DPAPI token storage** (`agent-rust/src/token_store.rs`) — implemented for
-  Windows (not compiled/verified on the Linux CI host); non-Windows uses a
-  documented **insecure `0600` file fallback** for dev only.
-- **Signed auto-update** (`agent-rust/src/update.rs`) — `UpdateChecker`
-  interface + pinned-key verify flow defined; bodies `unimplemented!()`.
-- **Windows service install/uninstall** (`agent-rust/src/main.rs`) — SCM
-  registration is a cfg-gated stub.
-- **Real screen video in the console** — the viewer's receive path is real, but
-  no frames arrive until agent capture + media are implemented.
+  `CF_UNICODETEXT` not wired; **validation + audit are real**.
+- **Signed auto-update** (`agent-rust/src/update.rs`) — interface + pinned-key
+  verify flow defined; bodies `unimplemented!()` (manual updates for MVP).
 
 ## 3. What's unsafe / not production-ready
 

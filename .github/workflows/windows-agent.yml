@@ -1,0 +1,64 @@
+name: Windows agent installer
+
+# Builds the Windows agent and packages a downloadable installer on a real
+# Windows runner (the Windows-only code — GDI capture, SendInput, DPAPI, the
+# registry auto-start — cannot be built on the Linux CI host). The installer and
+# the raw .exe are uploaded as artifacts you can download from the run's summary.
+
+on:
+  push:
+    branches: ["**"]
+    paths:
+      - "agent-rust/**"
+      - "installer/**"
+      - ".github/workflows/windows-agent.yml"
+  workflow_dispatch:
+  release:
+    types: [created]
+
+jobs:
+  build-installer:
+    name: Build agent .exe + installer
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build release binary (MSVC)
+        working-directory: agent-rust
+        run: cargo build --release --locked
+
+      - name: Sanity-check the binary
+        working-directory: agent-rust
+        run: |
+          .\target\release\remote-agent.exe --help
+          .\target\release\remote-agent.exe --version
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Compile installer
+        run: |
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" installer\remote-agent.iss
+
+      - name: Upload raw agent .exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: remote-agent-exe
+          path: agent-rust/target/release/remote-agent.exe
+          if-no-files-found: error
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: remote-agent-installer
+          path: installer/Output/*.exe
+          if-no-files-found: error
+
+      # On a tagged release, attach the installer to the GitHub Release too.
+      - name: Attach installer to release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: installer/Output/*.exe
