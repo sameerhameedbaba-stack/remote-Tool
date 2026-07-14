@@ -14,6 +14,7 @@ mod banner;
 mod capture;
 mod clipboard;
 mod config;
+mod encode;
 mod enroll;
 mod file;
 mod heartbeat;
@@ -409,9 +410,13 @@ async fn run_session_loop(
                             .context("building peer connection")
                             .map_err(StartFailure::Setup)?;
 
-                            // TODO: real screen source; interface wired, no fake frames.
-                            if let Ok(src) = capture::open_primary_display() {
-                                let _ = p.attach_screen_track(src);
+                            // Start the screen stream now that the session is
+                            // Active (banner acknowledged / consent given).
+                            match capture::open_primary_display() {
+                                Ok(src) => p.start_screen_stream(src),
+                                Err(e) => {
+                                    tracing::warn!(error = %e, "screen capture unavailable; continuing without video")
+                                }
                             }
 
                             let offer = p

@@ -6,9 +6,10 @@
 //! they parse and dispatch to [`crate::input`], [`crate::clipboard`], and
 //! [`crate::file`] with full validation.
 //!
-//! The **screen media track is a TODO stub with a defined interface**
-//! ([`crate::capture::ScreenSource`]). We deliberately do **not** fabricate
-//! encoded frames.
+//! The **screen stream is implemented**: a `screen` data channel carries
+//! JPEG-encoded frames captured from [`crate::capture::ScreenSource`] and
+//! chunked by [`crate::encode`]; the console reassembles and draws them to a
+//! canvas. (A codec-based media track is a future optimization.)
 //!
 //! (Extern crate `webrtc` is referenced as `::webrtc` to disambiguate from this
 //! module of the same name.)
@@ -17,15 +18,18 @@ use crate::audit_report::AuditReporter;
 use crate::capture::ScreenSource;
 use crate::signal::{Envelope, EnvelopeType};
 use anyhow::{Context, Result};
+use bytes::Bytes;
 use serde::Deserialize;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tokio::sync::mpsc::UnboundedSender;
 
 use ::webrtc::api::interceptor_registry::register_default_interceptors;
 use ::webrtc::api::media_engine::MediaEngine;
 use ::webrtc::api::{APIBuilder, API};
 use ::webrtc::data_channel::data_channel_message::DataChannelMessage;
+use ::webrtc::data_channel::data_channel_state::RTCDataChannelState;
 use ::webrtc::data_channel::RTCDataChannel;
 use ::webrtc::ice_transport::ice_candidate::{RTCIceCandidate, RTCIceCandidateInit};
 use ::webrtc::ice_transport::ice_server::RTCIceServer;
@@ -86,14 +90,22 @@ pub struct PeerSession {
     file_rx: Arc<Mutex<crate::file::FileReceiver>>,
 }
 
-/// Handles to the three labeled channels, held to keep them open. The send
-/// direction (agent→tech) is a TODO, so these are not read yet.
+/// Handles to the labeled channels, held to keep them open. `screen` carries the
+/// agent→technician JPEG frame stream (see [`crate::encode`]).
 #[allow(dead_code)]
 struct DataChannels {
     input: Arc<RTCDataChannel>,
     clipboard: Arc<RTCDataChannel>,
     file: Arc<RTCDataChannel>,
+    screen: Arc<RTCDataChannel>,
 }
+
+/// Target screen frame rate and JPEG quality for the MJPEG-over-datachannel
+/// stream. Conservative defaults that keep bandwidth sane; a future codec-based
+/// path (VP8/H.264 media track) can replace this without touching the console's
+/// canvas renderer.
+const SCREEN_TARGET_FPS: u64 = 10;
+const SCREEN_JPEG_QUALITY: u8 = 60;
 
 fn build_api() -> Result<API> {
     let mut media = MediaEngine::default();
@@ -176,6 +188,12 @@ impl PeerSession {
             .create_data_channel("file", None)
             .await
             .context("creating file channel")?;
+        // Agent→technician screen stream (JPEG frame chunks). The console reads
+        // it by label; the agent never reads from it.
+        let screen = pc
+            .create_data_channel("screen", None)
+            .await
+            .context("creating screen channel")?;
 
         attach_input_handler(&input, reporter.clone());
         attach_clipboard_handler(&clipboard, reporter.clone());
@@ -206,6 +224,7 @@ impl PeerSession {
                 input,
                 clipboard,
                 file,
+                screen,
             },
             file_rx,
         })
@@ -274,17 +293,78 @@ impl PeerSession {
         }
     }
 
-    /// TODO: attach the screen video track fed by a [`ScreenSource`].
+    /// Start streaming the screen to the technician over the `screen` data
+    /// channel: capture → JPEG-encode → chunk → send, throttled to
+    /// [`SCREEN_TARGET_FPS`]. Runs until the channel closes. Capture + encode are
+    /// blocking (GDI), so each frame is produced on the blocking pool; sends are
+    /// awaited, which applies natural backpressure to the network.
     ///
-    /// The interface is defined (`ScreenSource::next_frame`) but the encode +
-    /// `TrackLocalStaticSample` write loop is **not implemented** — we do not
-    /// fabricate encoded frames. When implemented this will: create a video
-    /// track with the negotiated codec, `add_track` it to `self.pc`, spawn a
-    /// task pulling `source.next_frame()`, encode (H.264/VP8), and
-    /// `write_sample`.
-    pub fn attach_screen_track(&self, _source: Box<dyn ScreenSource>) -> Result<()> {
-        tracing::warn!("attach_screen_track is a TODO stub; no media track added (no fake frames)");
-        Ok(())
+    /// Consent gating is the caller's responsibility: this is only invoked after
+    /// the banner is acknowledged and the session is `Active`.
+    pub fn start_screen_stream(&self, source: Box<dyn ScreenSource>) {
+        let dc = self.channels.screen.clone();
+        let source = Arc::new(Mutex::new(source));
+        let frame_interval = Duration::from_millis(1000 / SCREEN_TARGET_FPS.max(1));
+
+        tokio::spawn(async move {
+            // Wait for the channel to open (or give up if it closes first).
+            loop {
+                match dc.ready_state() {
+                    RTCDataChannelState::Open => break,
+                    RTCDataChannelState::Closed | RTCDataChannelState::Closing => {
+                        tracing::info!("screen channel closed before open; not streaming");
+                        return;
+                    }
+                    _ => tokio::time::sleep(Duration::from_millis(100)).await,
+                }
+            }
+            tracing::info!("screen stream started");
+
+            let mut frame_id: u32 = 0;
+            loop {
+                if dc.ready_state() != RTCDataChannelState::Open {
+                    tracing::info!("screen channel no longer open; stopping stream");
+                    return;
+                }
+                // Capture + encode off the async runtime (blocking GDI/JPEG).
+                let src = source.clone();
+                let encoded = tokio::task::spawn_blocking(move || {
+                    let mut s = src.lock().expect("screen source mutex poisoned");
+                    match s.next_frame() {
+                        Ok(Some(frame)) => crate::encode::encode_jpeg(&frame, SCREEN_JPEG_QUALITY)
+                            .map(|jpeg| Some((jpeg, frame.width as u16, frame.height as u16))),
+                        Ok(None) => Ok(None),
+                        Err(e) => Err(e),
+                    }
+                })
+                .await;
+
+                match encoded {
+                    Ok(Ok(Some((jpeg, w, h)))) => {
+                        for chunk in crate::encode::chunk_frame(frame_id, &jpeg, w, h) {
+                            if dc.send(&Bytes::from(chunk)).await.is_err() {
+                                tracing::info!("screen channel send failed; stopping stream");
+                                return;
+                            }
+                        }
+                        frame_id = frame_id.wrapping_add(1);
+                    }
+                    Ok(Ok(None)) => {
+                        // No capture backend (non-Windows dev/CI): idle politely.
+                        tokio::time::sleep(Duration::from_millis(500)).await;
+                    }
+                    Ok(Err(e)) => {
+                        tracing::warn!(error = %e, "screen capture/encode failed");
+                        tokio::time::sleep(Duration::from_millis(500)).await;
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "screen capture task join failed");
+                        return;
+                    }
+                }
+                tokio::time::sleep(frame_interval).await;
+            }
+        });
     }
 
     /// Access the file receiver (for tests / agent→tech transfers).

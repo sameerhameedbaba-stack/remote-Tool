@@ -67,11 +67,10 @@ fn write_file(path: &Path, bytes: &[u8]) -> Result<()> {
 mod dpapi {
     use anyhow::{bail, Result};
     use windows::core::PCWSTR;
-    use windows::Win32::Foundation::HLOCAL;
+    use windows::Win32::Foundation::{LocalFree, HLOCAL};
     use windows::Win32::Security::Cryptography::{
-        CryptProtectData, CryptUnprotectData, CRYPTPROTECT_FLAGS, CRYPT_INTEGER_BLOB,
+        CryptProtectData, CryptUnprotectData, CRYPT_INTEGER_BLOB,
     };
-    use windows::Win32::System::Memory::LocalFree;
 
     fn to_blob(data: &[u8]) -> CRYPT_INTEGER_BLOB {
         CRYPT_INTEGER_BLOB {
@@ -85,15 +84,7 @@ mod dpapi {
         unsafe {
             let in_blob = to_blob(plain);
             let mut out_blob = CRYPT_INTEGER_BLOB::default();
-            CryptProtectData(
-                &in_blob,
-                PCWSTR::null(),
-                None,
-                None,
-                None,
-                CRYPTPROTECT_FLAGS(0),
-                &mut out_blob,
-            )?;
+            CryptProtectData(&in_blob, PCWSTR::null(), None, None, None, 0, &mut out_blob)?;
             let slice =
                 std::slice::from_raw_parts(out_blob.pbData, out_blob.cbData as usize).to_vec();
             let _ = LocalFree(HLOCAL(out_blob.pbData as *mut _));
@@ -106,17 +97,7 @@ mod dpapi {
         unsafe {
             let in_blob = to_blob(protected);
             let mut out_blob = CRYPT_INTEGER_BLOB::default();
-            if CryptUnprotectData(
-                &in_blob,
-                None,
-                None,
-                None,
-                None,
-                CRYPTPROTECT_FLAGS(0),
-                &mut out_blob,
-            )
-            .is_err()
-            {
+            if CryptUnprotectData(&in_blob, None, None, None, None, 0, &mut out_blob).is_err() {
                 bail!("CryptUnprotectData failed (token unreadable; re-enrollment required)");
             }
             let slice =

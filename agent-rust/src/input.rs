@@ -6,8 +6,9 @@
 //!
 //! This module implements the *validation* for real (key-code allowlist,
 //! normalized-coordinate bounds, button/action allowlists) on every platform.
-//! The actual OS injection is a TODO stub: `#[cfg(windows)]` documents the
-//! `SendInput` interface; elsewhere it only logs.
+//! On Windows the validated event is injected via `SendInput` (mouse absolute
+//! move/click, keyboard virtual-key up/down with modifier bracketing). On other
+//! platforms injection is a log-only no-op (dev/CI).
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -194,21 +195,148 @@ pub fn apply(ev: &InputEvent) -> Result<(), InputError> {
 }
 
 // ---------------------------------------------------------------------------
-// Platform injection (TODO stubs — no real OS input yet)
+// Platform injection
 // ---------------------------------------------------------------------------
 #[cfg(windows)]
 fn inject(ev: &InputEvent) {
-    // TODO: Translate the validated event into a `windows`-crate `SendInput`
-    // call:
-    //   * Mouse: map normalized (x,y) → absolute virtual-desktop coordinates
-    //     (0..65535), build an `INPUT` with `MOUSEINPUT`
-    //     (`MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK | *_MOVE/DOWN/UP`).
-    //   * Key: map the `code` allowlist entry → virtual-key / scan code, build
-    //     a `KEYBDINPUT` (`KEYEVENTF_SCANCODE`, `*_KEYUP` for `up`).
-    // The event is already validated above; injection performs no parsing of
-    // its own and never spawns a process.
-    let _ = ev;
-    tracing::debug!("SendInput injection is a TODO stub (Windows)");
+    // The event is already validated above. Injection performs no parsing of its
+    // own and never spawns a process — it only synthesizes OS input via SendInput.
+    let inputs = win_input::build(ev);
+    if inputs.is_empty() {
+        return;
+    }
+    unsafe {
+        use windows::Win32::UI::Input::KeyboardAndMouse::{SendInput, INPUT};
+        let sent = SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
+        if sent as usize != inputs.len() {
+            tracing::warn!(
+                sent,
+                expected = inputs.len(),
+                "SendInput injected fewer events than requested"
+            );
+        }
+    }
+}
+
+/// Translates a validated [`InputEvent`] into Win32 `INPUT` structures. Kept in
+/// its own module so the virtual-key mapping is unit-testable and the `unsafe`
+/// SendInput call above stays tiny.
+#[cfg(windows)]
+mod win_input {
+    use super::InputEvent;
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYBD_EVENT_FLAGS,
+        KEYEVENTF_KEYUP, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
+        MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN,
+        MOUSEEVENTF_RIGHTUP, MOUSEINPUT, MOUSE_EVENT_FLAGS, VIRTUAL_KEY,
+    };
+
+    pub(super) fn build(ev: &InputEvent) -> Vec<INPUT> {
+        match ev {
+            InputEvent::Mouse {
+                x,
+                y,
+                button,
+                action,
+            } => build_mouse(*x, *y, button, action),
+            InputEvent::Key {
+                code,
+                action,
+                modifiers,
+            } => build_key(code, action, modifiers),
+        }
+    }
+
+    fn mouse_input(dx: i32, dy: i32, flags: MOUSE_EVENT_FLAGS) -> INPUT {
+        INPUT {
+            r#type: INPUT_MOUSE,
+            Anonymous: INPUT_0 {
+                mi: MOUSEINPUT {
+                    dx,
+                    dy,
+                    mouseData: 0,
+                    dwFlags: flags,
+                    time: 0,
+                    dwExtraInfo: 0,
+                },
+            },
+        }
+    }
+
+    fn build_mouse(x: f64, y: f64, button: &str, action: &str) -> Vec<INPUT> {
+        // Normalized [0,1] over the primary display → 0..65535 absolute coords.
+        let dx = (x.clamp(0.0, 1.0) * 65535.0).round() as i32;
+        let dy = (y.clamp(0.0, 1.0) * 65535.0).round() as i32;
+        // Always position the cursor (ABSOLUTE|MOVE), then apply any button flag.
+        let mut flags = MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_MOVE;
+        match (action, button) {
+            ("move", _) => {}
+            ("down", "left") => flags |= MOUSEEVENTF_LEFTDOWN,
+            ("up", "left") => flags |= MOUSEEVENTF_LEFTUP,
+            ("down", "right") => flags |= MOUSEEVENTF_RIGHTDOWN,
+            ("up", "right") => flags |= MOUSEEVENTF_RIGHTUP,
+            ("down", "middle") => flags |= MOUSEEVENTF_MIDDLEDOWN,
+            ("up", "middle") => flags |= MOUSEEVENTF_MIDDLEUP,
+            _ => {}
+        }
+        vec![mouse_input(dx, dy, flags)]
+    }
+
+    fn key_input(vk: u16, up: bool) -> INPUT {
+        INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: VIRTUAL_KEY(vk),
+                    wScan: 0,
+                    dwFlags: if up {
+                        KEYEVENTF_KEYUP
+                    } else {
+                        KEYBD_EVENT_FLAGS(0)
+                    },
+                    time: 0,
+                    dwExtraInfo: 0,
+                },
+            },
+        }
+    }
+
+    fn build_key(code: &str, action: &str, modifiers: &[String]) -> Vec<INPUT> {
+        let up = action == "up";
+        let Some(vk) = super::vk_for_code(code) else {
+            return Vec::new();
+        };
+        // Make each down/up self-contained: on down, press modifiers before the
+        // key; on up, release the key before the modifiers. This lets shortcuts
+        // like Ctrl+C work without relying on separate modifier key events.
+        let mut out = Vec::with_capacity(modifiers.len() + 1);
+        let mods: Vec<u16> = modifiers
+            .iter()
+            .filter_map(|m| vk_for_modifier(m))
+            .collect();
+        if up {
+            out.push(key_input(vk, true));
+            for m in mods.iter().rev() {
+                out.push(key_input(*m, true));
+            }
+        } else {
+            for m in &mods {
+                out.push(key_input(*m, false));
+            }
+            out.push(key_input(vk, false));
+        }
+        out
+    }
+
+    fn vk_for_modifier(m: &str) -> Option<u16> {
+        Some(match m {
+            "ctrl" => 0x11,  // VK_CONTROL
+            "shift" => 0x10, // VK_SHIFT
+            "alt" => 0x12,   // VK_MENU
+            "meta" => 0x5B,  // VK_LWIN
+            _ => return None,
+        })
+    }
 }
 
 #[cfg(not(windows))]
@@ -224,6 +352,98 @@ fn inject(ev: &InputEvent) {
     );
 }
 
+/// Maps a validated `KeyboardEvent.code` allowlist entry to a Win32 virtual-key
+/// code. Pure and platform-independent so it is unit-tested on every host.
+/// Returns `None` for anything not on the allowlist (defense in depth — this is
+/// only ever called after [`validate`], but never trusts that). Only invoked by
+/// the Windows injection path; the mapping table is still exercised by tests on
+/// all hosts.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn vk_for_code(code: &str) -> Option<u16> {
+    // KeyA..KeyZ → 'A'..'Z' (VK is the ASCII uppercase codepoint).
+    if let Some(rest) = code.strip_prefix("Key") {
+        if rest.len() == 1 {
+            let c = rest.chars().next().unwrap();
+            if c.is_ascii_uppercase() {
+                return Some(c as u16);
+            }
+        }
+        return None;
+    }
+    // Digit0..Digit9 → '0'..'9'.
+    if let Some(rest) = code.strip_prefix("Digit") {
+        if rest.len() == 1 {
+            let c = rest.chars().next().unwrap();
+            if c.is_ascii_digit() {
+                return Some(c as u16);
+            }
+        }
+        return None;
+    }
+    // F1..F24 → VK_F1 (0x70) upward.
+    if let Some(rest) = code.strip_prefix('F') {
+        if let Ok(n) = rest.parse::<u8>() {
+            if (1..=24).contains(&n) {
+                return Some(0x70 + (n as u16 - 1));
+            }
+        }
+        return None;
+    }
+    Some(match code {
+        "Enter" | "NumpadEnter" => 0x0D,
+        "Escape" => 0x1B,
+        "Backspace" => 0x08,
+        "Tab" => 0x09,
+        "Space" => 0x20,
+        "Minus" => 0xBD,
+        "Equal" => 0xBB,
+        "BracketLeft" => 0xDB,
+        "BracketRight" => 0xDD,
+        "Backslash" => 0xDC,
+        "Semicolon" => 0xBA,
+        "Quote" => 0xDE,
+        "Backquote" => 0xC0,
+        "Comma" => 0xBC,
+        "Period" => 0xBE,
+        "Slash" => 0xBF,
+        "CapsLock" => 0x14,
+        "ArrowLeft" => 0x25,
+        "ArrowUp" => 0x26,
+        "ArrowRight" => 0x27,
+        "ArrowDown" => 0x28,
+        "Home" => 0x24,
+        "End" => 0x23,
+        "PageUp" => 0x21,
+        "PageDown" => 0x22,
+        "Insert" => 0x2D,
+        "Delete" => 0x2E,
+        "ControlLeft" => 0xA2,
+        "ControlRight" => 0xA3,
+        "ShiftLeft" => 0xA0,
+        "ShiftRight" => 0xA1,
+        "AltLeft" => 0xA4,
+        "AltRight" => 0xA5,
+        "MetaLeft" => 0x5B,
+        "MetaRight" => 0x5C,
+        "Numpad0" => 0x60,
+        "Numpad1" => 0x61,
+        "Numpad2" => 0x62,
+        "Numpad3" => 0x63,
+        "Numpad4" => 0x64,
+        "Numpad5" => 0x65,
+        "Numpad6" => 0x66,
+        "Numpad7" => 0x67,
+        "Numpad8" => 0x68,
+        "Numpad9" => 0x69,
+        "NumpadAdd" => 0x6B,
+        "NumpadSubtract" => 0x6D,
+        "NumpadMultiply" => 0x6A,
+        "NumpadDivide" => 0x6F,
+        "NumpadDecimal" => 0x6E,
+        _ => return None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -235,6 +455,31 @@ mod tests {
         assert!(is_allowed_key_code("Digit0"));
         assert!(is_allowed_key_code("F5"));
         assert!(is_allowed_key_code("Enter"));
+    }
+
+    #[test]
+    fn vk_mapping_matches_allowlist_and_rejects_junk() {
+        // Alphanumerics map to their ASCII VK codes.
+        assert_eq!(vk_for_code("KeyA"), Some(0x41));
+        assert_eq!(vk_for_code("KeyZ"), Some(0x5A));
+        assert_eq!(vk_for_code("Digit0"), Some(0x30));
+        assert_eq!(vk_for_code("Digit9"), Some(0x39));
+        // Function keys are contiguous from VK_F1.
+        assert_eq!(vk_for_code("F1"), Some(0x70));
+        assert_eq!(vk_for_code("F12"), Some(0x7B));
+        // Named keys resolve; enter/numpad-enter share VK_RETURN.
+        assert_eq!(vk_for_code("Enter"), Some(0x0D));
+        assert_eq!(vk_for_code("NumpadEnter"), Some(0x0D));
+        assert_eq!(vk_for_code("ArrowLeft"), Some(0x25));
+        // Anything off the allowlist is rejected (defense in depth).
+        assert_eq!(vk_for_code("cmd.exe"), None);
+        assert_eq!(vk_for_code("Key1"), None);
+        assert_eq!(vk_for_code("F25"), None);
+        assert_eq!(vk_for_code(""), None);
+        // Every allowlisted code must have a VK mapping (no silent gaps).
+        for k in ALLOWED_NAMED_KEYS {
+            assert!(vk_for_code(k).is_some(), "missing VK for {k}");
+        }
     }
 
     #[test]
