@@ -14,7 +14,11 @@ on:
       - ".github/workflows/windows-agent.yml"
   workflow_dispatch:
   release:
-    types: [created]
+    types: [created, published]
+
+# Needed so the release job can attach the installer asset to the release.
+permissions:
+  contents: write
 
 jobs:
   build-installer:
