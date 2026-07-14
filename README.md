@@ -159,6 +159,11 @@ A root [`Makefile`](Makefile) wraps the three toolchains:
 Operator runbook: [`docs/RUNBOOK.md`](docs/RUNBOOK.md); how to test everything:
 [`docs/TESTING.md`](docs/TESTING.md).
 
+**Deploy to the public internet** (HTTPS + TURN, so you can connect to a remote
+machine over the internet): [`docs/DEPLOY.md`](docs/DEPLOY.md) —
+`infra/docker-compose.prod.yml` fronts everything with Caddy (automatic TLS) on
+one domain, with coturn for NAT traversal.
+
 ### Engineering audit
 
 A full engineering audit (repo, frontend, backend, agent, integration, security,

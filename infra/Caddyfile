@@ -1,0 +1,31 @@
+# Caddy reverse proxy for the Remote Support production deployment.
+#
+# One domain fronts everything, so the console and API share an origin (no CORS
+# headaches) and WebSocket signaling rides the same TLS cert:
+#   https://DOMAIN/            → web console
+#   https://DOMAIN/api/*       → Go backend REST API
+#   wss://DOMAIN/ws/*          → Go backend signaling (WebSocket upgrade)
+#   https://DOMAIN/healthz,/readyz → backend health
+#
+# Caddy obtains and renews a Let's Encrypt certificate automatically as long as
+# DOMAIN's DNS points at this host and ports 80 + 443 are reachable.
+
+{
+	# ACME account email (optional but recommended for expiry notices).
+	email {$ACME_EMAIL}
+}
+
+{$DOMAIN} {
+	encode gzip
+
+	# Backend: REST API, WebSocket signaling, and health endpoints.
+	@backend path /api/* /ws/* /healthz /readyz
+	handle @backend {
+		reverse_proxy backend:8080
+	}
+
+	# Everything else: the Next.js console.
+	handle {
+		reverse_proxy console:3000
+	}
+}
