@@ -29,6 +29,15 @@ import {
 } from "./signaling";
 import type { IceServer } from "./api";
 
+// Rewrite the SDP `setup` attribute so this browser answers as the DTLS server
+// (passive), which makes the Rust agent the DTLS client. See answerOffer() for
+// why: webrtc-rs is DTLS 1.2-only and cannot be the DTLS server to a modern
+// Chrome that offers DTLS 1.3. `active`/`actpass` in an answer both become
+// `passive`; `passive` is left as-is.
+function forceBrowserDtlsServer(sdp: string): string {
+  return sdp.replace(/a=setup:(active|actpass)/g, "a=setup:passive");
+}
+
 // --- Data-channel message types (peer-to-peer protocol) ---
 
 export type MouseButton = "left" | "right" | "middle";
@@ -369,13 +378,20 @@ export class RemoteSessionClient {
       this.remoteDescriptionSet = true;
       await this.flushPendingCandidates();
       const answer = await this.pc.createAnswer();
-      await this.pc.setLocalDescription(answer);
+      // Force this browser to be the DTLS *server* (setup:passive) so the Rust
+      // agent takes the DTLS *client* role and drives the handshake. The agent's
+      // WebRTC stack (webrtc-rs) speaks only DTLS 1.2; when Chrome is the DTLS
+      // client it initiates DTLS 1.3, which the agent cannot complete (the
+      // handshake dies with "invalid named curve"). With the agent as client the
+      // handshake stays on DTLS 1.2 and succeeds. Chrome happily serves DTLS 1.2.
+      const answerSdp = forceBrowserDtlsServer(answer.sdp ?? "");
+      await this.pc.setLocalDescription({ type: "answer", sdp: answerSdp });
       this.sendEnvelope({
         type: "answer",
         session_id: this.sessionId,
-        payload: { type: "answer", sdp: answer.sdp ?? "" },
+        payload: { type: "answer", sdp: answerSdp },
       });
-      this.log("answer sent");
+      this.log("answer sent (dtls role: browser=server, agent=client)");
     } catch (err) {
       this.cb.onError?.(
         err instanceof Error ? err.message : "Failed to answer offer",
