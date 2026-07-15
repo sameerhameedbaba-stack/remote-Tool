@@ -32,6 +32,7 @@ use ::webrtc::data_channel::data_channel_message::DataChannelMessage;
 use ::webrtc::data_channel::data_channel_state::RTCDataChannelState;
 use ::webrtc::data_channel::RTCDataChannel;
 use ::webrtc::ice_transport::ice_candidate::{RTCIceCandidate, RTCIceCandidateInit};
+use ::webrtc::ice_transport::ice_credential_type::RTCIceCredentialType;
 use ::webrtc::ice_transport::ice_server::RTCIceServer;
 use ::webrtc::interceptor::registry::Registry;
 use ::webrtc::peer_connection::configuration::RTCConfiguration;
@@ -70,11 +71,22 @@ impl IceServerConfig {
             IceUrls::One(u) => vec![u],
             IceUrls::Many(v) => v,
         };
+        let username = self.username.unwrap_or_default();
+        let credential = self.credential.unwrap_or_default();
+        // A TURN server with credentials must declare Password credentials —
+        // webrtc-rs rejects a credentialed server left at the default
+        // `Unspecified` type ("invalid turn server credentials"). STUN entries
+        // carry no credentials and stay Unspecified.
+        let credential_type = if username.is_empty() && credential.is_empty() {
+            RTCIceCredentialType::Unspecified
+        } else {
+            RTCIceCredentialType::Password
+        };
         RTCIceServer {
             urls,
-            username: self.username.unwrap_or_default(),
-            credential: self.credential.unwrap_or_default(),
-            ..Default::default()
+            username,
+            credential,
+            credential_type,
         }
     }
 }
@@ -488,5 +500,53 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(many.urls, IceUrls::Many(v) if v.len() == 2));
+    }
+
+    fn ice(urls: &str, user: Option<&str>, cred: Option<&str>) -> IceServerConfig {
+        IceServerConfig {
+            urls: IceUrls::One(urls.to_string()),
+            username: user.map(String::from),
+            credential: cred.map(String::from),
+        }
+    }
+
+    async fn try_build(ice_servers: Vec<IceServerConfig>) -> Result<()> {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        PeerSession::new(
+            "probe".into(),
+            ice_servers,
+            std::path::PathBuf::from("/tmp"),
+            tx,
+            None,
+        )
+        .await
+        .map(|_| ())
+    }
+
+    // Regression: a TURN server with credentials must build a peer connection.
+    // webrtc-rs rejects a credentialed ICE server whose credential_type is left
+    // at the default `Unspecified` ("invalid turn server credentials"), which
+    // previously broke every real session (STUN-only/empty configs hid it).
+    #[tokio::test]
+    async fn builds_peer_connection_with_stun_and_turn() {
+        let cases: Vec<(&str, Vec<IceServerConfig>)> = vec![
+            ("empty", vec![]),
+            ("stun-only", vec![ice("stun:example.com:3478", None, None)]),
+            (
+                "turn-with-creds",
+                vec![ice("turn:example.com:3478", Some("turnuser"), Some("secret"))],
+            ),
+            (
+                "stun+turn (production shape)",
+                vec![
+                    ice("stun:example.com:3478", None, None),
+                    ice("turn:example.com:3478", Some("turnuser"), Some("secret")),
+                ],
+            ),
+        ];
+        for (name, ice_servers) in cases {
+            let r = try_build(ice_servers).await;
+            assert!(r.is_ok(), "peer connection build failed for {name}: {r:?}");
+        }
     }
 }
