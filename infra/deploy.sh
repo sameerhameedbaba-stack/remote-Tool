@@ -78,7 +78,9 @@ POSTGRES_DB=remote_support
 JWT_SECRET=$(gen)
 JWT_TTL=3600s
 AGENT_ENROLLMENT_TOKEN=$(gen)
-SESSION_CODE_TTL=300s
+# 30 minutes: generous enough for an end user to open the connect page,
+# download, clear SmartScreen, and run before the one-time code expires.
+SESSION_CODE_TTL=1800s
 SESSION_CODE_LENGTH=9
 
 SEED_TECH_EMAIL=admin@${DOMAIN}
@@ -94,6 +96,9 @@ else
   # Keep DOMAIN/PUBLIC_IP fresh in case the IP changed.
   sed -i "s|^DOMAIN=.*|DOMAIN=${DOMAIN}|" "$ENV_FILE"
   sed -i "s|^PUBLIC_IP=.*|PUBLIC_IP=${PUBLIC_IP}|" "$ENV_FILE"
+  # Migrate the old too-short 5-minute code TTL to 30 minutes (leaves any
+  # value the operator set themselves untouched).
+  sed -i "s|^SESSION_CODE_TTL=300s\$|SESSION_CODE_TTL=1800s|" "$ENV_FILE"
 fi
 
 # --- 4b. Fetch the connect-page agent binary (best-effort) -------------------
