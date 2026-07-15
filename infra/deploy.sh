@@ -96,6 +96,26 @@ else
   sed -i "s|^PUBLIC_IP=.*|PUBLIC_IP=${PUBLIC_IP}|" "$ENV_FILE"
 fi
 
+# --- 4b. Fetch the connect-page agent binary (best-effort) -------------------
+# The connect page (connect.$DOMAIN) hands this exact binary to end users so it
+# self-configures and joins on launch. It is a Windows build, produced by CI and
+# attached to the GitHub release, so we fetch it rather than build it here.
+AGENT_EXE_URL="${AGENT_EXE_URL:-https://github.com/sameerhameedbaba-stack/remote-Tool/releases/latest/download/remote-agent.exe}"
+AGENT_DIST="$APP_DIR/infra/agent-dist"
+mkdir -p "$AGENT_DIST"
+log "Fetching connect-page agent binary from $AGENT_EXE_URL"
+if curl -fL --retry 3 "$AGENT_EXE_URL" -o "$AGENT_DIST/remote-agent.exe.tmp" 2>/dev/null \
+  && [ -s "$AGENT_DIST/remote-agent.exe.tmp" ]; then
+  mv "$AGENT_DIST/remote-agent.exe.tmp" "$AGENT_DIST/remote-agent.exe"
+  log "connect-page agent binary ready ($(du -h "$AGENT_DIST/remote-agent.exe" | cut -f1))"
+else
+  rm -f "$AGENT_DIST/remote-agent.exe.tmp"
+  log "WARNING: could not fetch remote-agent.exe yet. The console + unattended"
+  log "         installer still work; the connect.$DOMAIN one-click download will"
+  log "         404 until a release publishes remote-agent.exe. Re-run this"
+  log "         script (or set AGENT_EXE_URL) once the asset exists."
+fi
+
 # --- 5. Firewall (only if ufw is active; never lock out SSH) -----------------
 if command -v ufw >/dev/null 2>&1 && ufw status | grep -q "Status: active"; then
   log "Opening firewall ports via ufw"
@@ -126,7 +146,14 @@ cat <<EOF
     email:     ${SEED_EMAIL}
     password:  ${SEED_PASS}
 
-  For your friend's Windows agent installer:
+  Easiest way to connect someone (no install, no typing):
+    1. In the console, click "Create code" to get a 9-digit code.
+    2. Send them:  https://connect.${DOMAIN}
+    3. They enter the code, run the file it downloads — you get control.
+    (Requires a DNS A record for connect.${DOMAIN} → this host, and a release
+     that publishes remote-agent.exe. See docs/CONNECT.md.)
+
+  Or, for a permanent unattended install, the Windows agent installer uses:
     Backend API URL:    https://${DOMAIN}
     WebSocket URL:      wss://${DOMAIN}
     Enrollment token:   ${ENROLL}

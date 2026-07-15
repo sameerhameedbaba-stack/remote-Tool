@@ -101,12 +101,16 @@ you** — they always see that it's happening; there is no silent mode.
 3. Every session start/end, file transfer, and input is written to the **Audit**
    log.
 
-## Attended (one-off) sessions — no install
+## Attended (one-off) sessions — no install (recommended)
 
-For a quick session without installing anything, use the **portable/attended**
-flow: on the dashboard, **Create attended code**, send the code to your friend,
-and have them run `remote-agent.exe portable` and paste the code. (Same consent
-banner applies.)
+The easiest path: on the dashboard click **Create code**, send your friend
+**`https://connect.<your-domain>`**, they enter the code and run the file it
+downloads — you get control. No install, no token. Add a DNS `A` record for
+`connect.<your-domain>` → the VM first. Full details and troubleshooting in
+[docs/CONNECT.md](CONNECT.md).
+
+(A terminal alternative also exists: `remote-agent.exe portable` prompts for the
+code. Same consent banner applies to both.)
 
 ---
 

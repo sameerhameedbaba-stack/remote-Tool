@@ -10,6 +10,8 @@ node_modules/
 out/
 web-console/.next/
 web-console/node_modules/
+# Connect-page download binary (fetched at deploy time, not committed)
+infra/agent-dist/remote-agent.exe
 # Env / secrets
 .env
 *.env.local

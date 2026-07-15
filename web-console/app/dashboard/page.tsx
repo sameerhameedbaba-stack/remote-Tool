@@ -62,11 +62,16 @@ function AttendedCodeCard({
       /* ignore */
     }
   };
+  // The end user opens the connect page (connect.<this-host>) and enters the
+  // code; the page hands them a ready-to-run agent. Derived from the current
+  // origin so it stays correct across deployments.
+  const connectHost =
+    typeof window !== "undefined" ? `connect.${window.location.host}` : "";
   return (
     <div className="mt-4 rounded-xl border border-accent/30 bg-accent-soft/40 p-4">
       <div className="flex items-center justify-between">
         <span className="text-[12px] font-medium text-fg-secondary">
-          Read this code to the end user
+          Send the user to the connect page
         </span>
         <button
           onClick={onClear}
@@ -75,6 +80,13 @@ function AttendedCodeCard({
           Dismiss
         </button>
       </div>
+      {connectHost && (
+        <p className="mt-1 text-[12px] text-fg-muted">
+          Tell them to open{" "}
+          <span className="font-medium text-fg">{connectHost}</span> and enter
+          this code — a ready-to-run app downloads, no install needed.
+        </p>
+      )}
       <div className="mt-3 flex items-center justify-between gap-4">
         <div
           className="font-mono text-3xl font-semibold tracking-[0.15em] text-fg"

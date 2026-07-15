@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex" />
+    <title>Join a support session</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #f6f7f9;
+        --card: #ffffff;
+        --fg: #16181d;
+        --fg-muted: #5b6472;
+        --line: #e4e7ec;
+        --accent: #2563eb;
+        --accent-fg: #ffffff;
+        --danger: #c81e1e;
+        --ok: #067647;
+        --shadow: 0 10px 40px rgba(20, 24, 33, 0.08);
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #0d1017;
+          --card: #161a22;
+          --fg: #eef1f6;
+          --fg-muted: #9aa4b2;
+          --line: #262c38;
+          --accent: #3b82f6;
+          --accent-fg: #ffffff;
+          --danger: #f87171;
+          --ok: #34d399;
+          --shadow: 0 10px 40px rgba(0, 0, 0, 0.4);
+        }
+      }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; padding: 0; }
+      body {
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 24px;
+        background: var(--bg);
+        color: var(--fg);
+        font: 16px/1.5 system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+      }
+      .card {
+        width: 100%;
+        max-width: 440px;
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        box-shadow: var(--shadow);
+        padding: 32px 28px;
+      }
+      .logo {
+        display: flex; align-items: center; gap: 10px;
+        font-weight: 650; font-size: 15px; color: var(--fg-muted);
+        margin-bottom: 20px;
+      }
+      .logo .dot {
+        width: 10px; height: 10px; border-radius: 50%;
+        background: var(--accent);
+        box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 20%, transparent);
+      }
+      h1 { font-size: 22px; margin: 0 0 6px; letter-spacing: -0.01em; }
+      p.sub { margin: 0 0 22px; color: var(--fg-muted); font-size: 14px; }
+      label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 8px; }
+      #code {
+        width: 100%;
+        font: 600 30px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        letter-spacing: 0.18em;
+        text-align: center;
+        padding: 16px 12px;
+        color: var(--fg);
+        background: transparent;
+        border: 1.5px solid var(--line);
+        border-radius: 12px;
+        outline: none;
+        transition: border-color 0.15s;
+      }
+      #code::placeholder { color: var(--fg-muted); letter-spacing: 0.12em; opacity: 0.5; }
+      #code:focus { border-color: var(--accent); }
+      button {
+        width: 100%;
+        margin-top: 16px;
+        padding: 14px 16px;
+        font-size: 15px; font-weight: 650;
+        color: var(--accent-fg);
+        background: var(--accent);
+        border: none; border-radius: 12px;
+        cursor: pointer;
+        transition: filter 0.15s, opacity 0.15s;
+      }
+      button:hover { filter: brightness(1.06); }
+      button:disabled { opacity: 0.5; cursor: not-allowed; }
+      .err { color: var(--danger); font-size: 13px; margin-top: 10px; min-height: 18px; }
+      .steps {
+        margin-top: 22px; padding-top: 20px; border-top: 1px solid var(--line);
+        display: none;
+      }
+      .steps.show { display: block; }
+      .steps h2 { font-size: 15px; margin: 0 0 12px; }
+      ol { margin: 0; padding-left: 20px; }
+      ol li { margin-bottom: 10px; font-size: 14px; }
+      ol li b { font-weight: 650; }
+      .again { margin-top: 14px; font-size: 13px; color: var(--fg-muted); }
+      .again a { color: var(--accent); text-decoration: none; }
+      .again a:hover { text-decoration: underline; }
+      .note {
+        margin-top: 22px; font-size: 12.5px; color: var(--fg-muted);
+        display: flex; gap: 8px; align-items: flex-start;
+      }
+      .note svg { flex: none; margin-top: 2px; }
+      code.fname {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 12px; background: color-mix(in srgb, var(--fg) 7%, transparent);
+        padding: 1px 5px; border-radius: 5px; word-break: break-all;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="card">
+      <div class="logo"><span class="dot"></span> Remote Support</div>
+      <h1>Join a support session</h1>
+      <p class="sub">Enter the 9-digit code the person helping you gave you.</p>
+
+      <form id="form" autocomplete="off">
+        <label for="code">Support code</label>
+        <input
+          id="code"
+          inputmode="numeric"
+          pattern="[0-9]*"
+          maxlength="9"
+          placeholder="000000000"
+          aria-describedby="err"
+          autofocus
+        />
+        <button id="go" type="submit" disabled>Connect</button>
+        <div class="err" id="err" role="alert"></div>
+      </form>
+
+      <section class="steps" id="steps" aria-live="polite">
+        <h2>Your download is starting…</h2>
+        <ol>
+          <li><b>Open</b> the downloaded file
+            <code class="fname" id="fname">RemoteSupport…exe</code> (check your
+            browser's downloads).</li>
+          <li>If Windows shows a blue “Windows protected your PC” box, click
+            <b>More info</b> → <b>Run anyway</b>. (The app isn't signed yet —
+            that's expected.)</li>
+          <li>A small window opens and connects you automatically. <b>Keep it
+            open</b> for the whole session.</li>
+        </ol>
+        <div class="again">
+          Didn't download? <a href="#" id="retry">Click here to download again</a>.
+        </div>
+      </section>
+
+      <div class="note">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="M12 2 4 5v6c0 5 3.4 8.3 8 10 4.6-1.7 8-5 8-10V5l-8-3Z"
+            stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+        </svg>
+        <span>You stay in control: a red banner naming your technician stays on
+          your screen the whole time, and everything they do is logged. Close
+          the window to end the session at any point.</span>
+      </div>
+    </main>
+
+    <script>
+      (function () {
+        var input = document.getElementById("code");
+        var go = document.getElementById("go");
+        var err = document.getElementById("err");
+        var form = document.getElementById("form");
+        var steps = document.getElementById("steps");
+        var fname = document.getElementById("fname");
+        var retry = document.getElementById("retry");
+        var CODE_LEN = 9;
+
+        function clean(v) { return (v || "").replace(/\D/g, "").slice(0, CODE_LEN); }
+
+        input.addEventListener("input", function () {
+          input.value = clean(input.value);
+          go.disabled = input.value.length !== CODE_LEN;
+          err.textContent = "";
+        });
+
+        function download(code) {
+          var host = location.host;
+          fname.textContent = "RemoteSupport--" + host + "--" + code + ".exe";
+          // Trigger the download without navigating away from this page.
+          var a = document.createElement("a");
+          a.href = "/dl?code=" + encodeURIComponent(code);
+          a.rel = "noopener";
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          steps.classList.add("show");
+        }
+
+        form.addEventListener("submit", function (e) {
+          e.preventDefault();
+          var code = clean(input.value);
+          if (code.length !== CODE_LEN) {
+            err.textContent = "Please enter all 9 digits.";
+            return;
+          }
+          download(code);
+        });
+
+        retry.addEventListener("click", function (e) {
+          e.preventDefault();
+          var code = clean(input.value);
+          if (code.length === CODE_LEN) download(code);
+        });
+      })();
+    </script>
+  </body>
+</html>

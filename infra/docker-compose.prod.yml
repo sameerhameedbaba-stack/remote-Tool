@@ -33,6 +33,8 @@ services:
       ACME_EMAIL: ${ACME_EMAIL:-}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./connect:/srv/connect:ro
+      - ./agent-dist:/srv/agent:ro
       - caddy_data:/data
       - caddy_config:/config
     ports:

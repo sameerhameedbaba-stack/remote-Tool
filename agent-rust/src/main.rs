@@ -14,6 +14,7 @@ mod banner;
 mod capture;
 mod clipboard;
 mod config;
+mod connect;
 mod encode;
 mod enroll;
 mod file;
@@ -49,8 +50,10 @@ struct Cli {
     #[arg(long, global = true)]
     enrollment_token: Option<String>,
 
+    /// Run mode. Omitted (e.g. double-clicked after downloading from the connect
+    /// page) → auto-connect using the code baked into the file name.
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Subcommand)]
@@ -81,19 +84,84 @@ async fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
-    let cfg = Config::resolve(
-        cli.api_base.clone(),
-        cli.ws_base.clone(),
-        cli.enrollment_token.clone(),
-    )?;
 
     match cli.command {
-        Command::Service => run_service(cfg).await,
-        Command::Portable => run_portable(cfg).await,
-        Command::Enroll { name } => run_enroll(cfg, name).await,
-        Command::Install => run_install(&cfg),
-        Command::Uninstall => run_uninstall(),
+        Some(cmd) => {
+            let cfg = Config::resolve(cli.api_base, cli.ws_base, cli.enrollment_token)?;
+            match cmd {
+                Command::Service => run_service(cfg).await,
+                Command::Portable => run_portable(cfg, None).await,
+                Command::Enroll { name } => run_enroll(cfg, name).await,
+                Command::Install => run_install(&cfg),
+                Command::Uninstall => run_uninstall(),
+            }
+        }
+        // No subcommand: the connect-page "download & run" path.
+        None => run_autoconnect(cli.api_base, cli.ws_base, cli.enrollment_token).await,
     }
+}
+
+// ---------------------------------------------------------------------------
+// auto-connect (no subcommand — double-clicked connect download)
+// ---------------------------------------------------------------------------
+/// Entry point when the binary is launched with no subcommand. If the file name
+/// encodes a server host + one-time code (a connect-page download) we join that
+/// session automatically; otherwise we fall back to prompting for a code. Either
+/// way the console window is held open at the end so an end user who
+/// double-clicked can read the outcome instead of it vanishing.
+async fn run_autoconnect(
+    api_base: Option<String>,
+    ws_base: Option<String>,
+    enrollment_token: Option<String>,
+) -> Result<()> {
+    let self_name = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.file_name().map(|s| s.to_string_lossy().into_owned()));
+    let params = self_name
+        .as_deref()
+        .and_then(connect::parse_connect_filename);
+
+    let outcome = match params {
+        Some(p) => {
+            println!("Connecting to {} …", p.host);
+            // The file name is the source of truth for a connect download: it
+            // wins over any ambient REMOTE_AGENT_* env so the end user cannot
+            // accidentally point at the wrong server.
+            let cfg = Config::resolve(
+                Some(format!("https://{}", p.host)),
+                Some(format!("wss://{}", p.host)),
+                None,
+            )?;
+            run_portable(cfg, Some(p.code)).await
+        }
+        None => {
+            // Not a connect download (renamed binary / manual run): prompt.
+            let cfg = Config::resolve(api_base, ws_base, enrollment_token)?;
+            run_portable(cfg, None).await
+        }
+    };
+
+    hold_console(&outcome);
+    // The outcome was already reported to the user by hold_console; don't let
+    // anyhow print it a second time.
+    Ok(())
+}
+
+/// Print the final outcome and wait for Enter, so a double-clicked console
+/// window stays readable instead of closing instantly.
+fn hold_console(outcome: &Result<()>) {
+    use std::io::Write;
+    match outcome {
+        Ok(()) => println!("\nThe session has ended. It is now safe to close this window."),
+        Err(e) => println!(
+            "\nCould not connect: {e:#}\n\n\
+             Double-check the code with the person helping you, then download and run a fresh copy."
+        ),
+    }
+    print!("\nPress Enter to close… ");
+    let _ = std::io::stdout().flush();
+    let mut line = String::new();
+    let _ = std::io::stdin().read_line(&mut line);
 }
 
 // ---------------------------------------------------------------------------
@@ -204,20 +272,23 @@ struct AttendedJoinResponse {
     ice_servers: Vec<IceServerConfig>,
 }
 
-async fn run_portable(cfg: Config) -> Result<()> {
-    // Prompt for the one-time code (blocking read off the runtime).
-    let code = tokio::task::spawn_blocking(|| {
-        use std::io::Write;
-        print!("Enter the session code your technician gave you: ");
-        let _ = std::io::stdout().flush();
-        let mut line = String::new();
-        std::io::stdin()
-            .read_line(&mut line)
-            .map(|_| line.trim().to_string())
-    })
-    .await
-    .context("reading code")?
-    .context("reading code")?;
+async fn run_portable(cfg: Config, code: Option<String>) -> Result<()> {
+    // Use the supplied code (from a connect download) or prompt for one.
+    let code = match code {
+        Some(c) => c.trim().to_string(),
+        None => tokio::task::spawn_blocking(|| {
+            use std::io::Write;
+            print!("Enter the session code your technician gave you: ");
+            let _ = std::io::stdout().flush();
+            let mut line = String::new();
+            std::io::stdin()
+                .read_line(&mut line)
+                .map(|_| line.trim().to_string())
+        })
+        .await
+        .context("reading code")?
+        .context("reading code")?,
+    };
 
     if code.is_empty() {
         anyhow::bail!("no session code entered");

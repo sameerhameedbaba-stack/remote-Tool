@@ -60,9 +60,14 @@ jobs:
           path: installer/Output/*.exe
           if-no-files-found: error
 
-      # On a tagged release, attach the installer to the GitHub Release too.
-      - name: Attach installer to release
+      # On a tagged release, attach BOTH the installer and the raw agent binary
+      # to the GitHub Release. The raw remote-agent.exe is what the production
+      # connect page serves for the one-click "download & run" host flow
+      # (infra/deploy.sh fetches it from the latest release).
+      - name: Attach installer + agent to release
         if: github.event_name == 'release'
         uses: softprops/action-gh-release@v2
         with:
-          files: installer/Output/*.exe
+          files: |
+            installer/Output/*.exe
+            agent-rust/target/release/remote-agent.exe
