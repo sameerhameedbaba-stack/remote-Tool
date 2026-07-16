@@ -1,15 +1,19 @@
 # Caddy reverse proxy for the Remote Support production deployment.
 #
 # Multi-tenant routing (all served by one console + one backend):
-#   {$DOMAIN}, www           → apex (marketing / login)
-#   admin.{$DOMAIN}          → platform super-admin panel
-#   <username>.{$DOMAIN}     → per-technician tenant panel  (wildcard, on-demand TLS)
+#   {$DOMAIN}, www, admin    → fixed hostnames (marketing/login, admin panel)
+#   <username>.{$DOMAIN}     → per-technician tenant panel  (on-demand TLS)
 #   connect.{$DOMAIN}        → host onboarding (enter code → download client)
 #
-# The console (Next.js) renders the right panel from the Host header; /api, /ws
-# and health always go to the Go backend. Certificates: fixed hostnames use
-# HTTP-01; tenant subdomains are issued on demand, gated by the backend's
-# /internal/tls-check so only real tenants (and the fixed names) get a cert.
+# TLS: fixed hostnames get normal per-name certificates (HTTP-01). Tenant
+# subdomains are dynamic, so they use a catch-all with ON-DEMAND TLS — Caddy
+# issues an individual certificate per hostname on first request, gated by the
+# backend's /internal/tls-check so only real tenants (+ fixed names) get one.
+#
+# NOTE: we deliberately do NOT use a "*.{$DOMAIN}" site label — that makes Caddy
+# attempt a single wildcard certificate, which requires the DNS-01 challenge (a
+# DNS-provider API credential). The catch-all below issues normal per-name certs
+# via HTTP-01 instead, so no DNS API is needed.
 
 {
 	email {$ACME_EMAIL}
@@ -30,13 +34,8 @@
 	}
 }
 
-# Apex + www: marketing / login.
-{$DOMAIN}, www.{$DOMAIN} {
-	import app_routes
-}
-
-# Platform super-admin panel.
-admin.{$DOMAIN} {
+# Fixed hostnames — normal HTTP-01 certificates.
+{$DOMAIN}, www.{$DOMAIN}, admin.{$DOMAIN} {
 	import app_routes
 }
 
@@ -69,12 +68,14 @@ connect.{$DOMAIN} {
 }
 
 # ---------------------------------------------------------------------------
-# Technician tenant panels — <username>.DOMAIN
-# One wildcard block serves every technician's subdomain. Certificates are
-# issued on demand per hostname and gated by the backend, so an attacker cannot
-# flood the CA with requests for non-existent subdomains.
+# Technician tenant panels — <username>.DOMAIN (and any other host)
+# Catch-all with on-demand TLS: a per-hostname certificate is issued on the
+# first request, but only after the backend's ask endpoint approves the name,
+# so an attacker cannot flood the CA with certs for non-existent subdomains.
+# Explicit blocks above take precedence, so this only ever handles tenant
+# subdomains.
 # ---------------------------------------------------------------------------
-*.{$DOMAIN} {
+https:// {
 	tls {
 		on_demand
 	}
