@@ -10,11 +10,31 @@
 // Configuration
 // ---------------------------------------------------------------------------
 
-export const API_BASE_URL: string =
-  process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8080";
+// Multi-tenant: when no explicit base is configured (production), talk to the
+// SAME origin the app is served from, so each tenant subdomain
+// (username.<domain>, admin.<domain>) hits its own /api and /ws via Caddy — no
+// cross-origin, no CORS. An explicit env value (e.g. local dev pointing at
+// :8080) still wins.
+function resolveApiBase(): string {
+  const env = process.env.NEXT_PUBLIC_API_BASE_URL;
+  if (env && env.length > 0) return env;
+  if (typeof window !== "undefined") return window.location.origin;
+  return "http://localhost:8080";
+}
 
-export const WS_BASE_URL: string =
-  process.env.NEXT_PUBLIC_WS_BASE_URL ?? "ws://localhost:8080";
+function resolveWsBase(): string {
+  const env = process.env.NEXT_PUBLIC_WS_BASE_URL;
+  if (env && env.length > 0) return env;
+  if (typeof window !== "undefined") {
+    const proto = window.location.protocol === "https:" ? "wss://" : "ws://";
+    return proto + window.location.host;
+  }
+  return "ws://localhost:8080";
+}
+
+export const API_BASE_URL: string = resolveApiBase();
+
+export const WS_BASE_URL: string = resolveWsBase();
 
 // ---------------------------------------------------------------------------
 // Domain types (mirror docs/API.md)
@@ -25,8 +45,12 @@ export type TechnicianRole = "admin" | "technician";
 export interface Technician {
   id: string;
   email: string;
+  username: string;
   display_name: string;
   role: TechnicianRole;
+  active: boolean;
+  created_by?: string | null;
+  created_at?: string;
 }
 
 export type DeviceOS = "windows" | "macos" | "linux" | string;
@@ -392,4 +416,49 @@ export function listAudit(
     },
     signal,
   });
+}
+
+// --- Admin: technician tenants (super-admin only) ---
+
+export interface TechniciansResponse {
+  technicians: Technician[];
+}
+
+export interface CreateTechnicianInput {
+  email: string;
+  username: string;
+  display_name?: string;
+  password: string;
+}
+
+export function listTechnicians(
+  token: string,
+  signal?: AbortSignal,
+): Promise<TechniciansResponse> {
+  return request<TechniciansResponse>("/api/v1/admin/technicians", {
+    token,
+    signal,
+  });
+}
+
+export function createTechnician(
+  token: string,
+  input: CreateTechnicianInput,
+): Promise<Technician> {
+  return request<Technician>("/api/v1/admin/technicians", {
+    method: "POST",
+    token,
+    body: input,
+  });
+}
+
+export function setTechnicianActive(
+  token: string,
+  id: string,
+  active: boolean,
+): Promise<void> {
+  return request<void>(
+    `/api/v1/admin/technicians/${encodeURIComponent(id)}/active`,
+    { method: "POST", token, body: { active } },
+  );
 }

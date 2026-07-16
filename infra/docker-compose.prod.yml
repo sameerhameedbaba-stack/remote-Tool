@@ -115,10 +115,11 @@ services:
       context: ../web-console
       dockerfile: Dockerfile
       args:
-        # NEXT_PUBLIC_* are inlined at build time, so the domain must be set
-        # before building. Same origin as the API (Caddy path-routes /api + /ws).
-        NEXT_PUBLIC_API_BASE_URL: https://${DOMAIN}
-        NEXT_PUBLIC_WS_BASE_URL: wss://${DOMAIN}
+        # Empty => the console calls the SAME origin it is served from, so every
+        # tenant subdomain (admin.<domain>, username.<domain>) hits its own
+        # /api and /ws via Caddy. No per-domain rebuild, no cross-origin.
+        NEXT_PUBLIC_API_BASE_URL: ""
+        NEXT_PUBLIC_WS_BASE_URL: ""
     restart: unless-stopped
     depends_on:
       backend:
