@@ -59,6 +59,11 @@ function SessionContent() {
   const canvasWrapRef = useRef<HTMLDivElement>(null);
   const hasScreenRef = useRef(false);
   const [hasScreen, setHasScreen] = useState(false);
+  // Latest decoded frame size, for input coordinate mapping (the canvas backing
+  // store is sized to the display, not the frame, so it can't be used here).
+  const frameSizeRef = useRef<{ width: number; height: number } | null>(null);
+  // Mirror of `fit` readable inside the once-created onScreenFrame callback.
+  const fitRef = useRef<"contain" | "cover">("contain");
   const clientRef = useRef<RemoteSessionClient | null>(null);
   const inputEnabledRef = useRef(false);
   // Coalesce pointer-move sends to one per animation frame.
@@ -164,18 +169,42 @@ function SessionContent() {
             void videoRef.current.play().catch(() => undefined);
           }
         },
-        onScreenFrame: (bitmap, w, h) => {
+        onScreenFrame: (bitmap, _w, _h) => {
           const canvas = canvasRef.current;
           if (!canvas) {
             bitmap.close();
             return;
           }
-          if (canvas.width !== w || canvas.height !== h) {
-            canvas.width = w;
-            canvas.height = h;
+          const fw = bitmap.width;
+          const fh = bitmap.height;
+          frameSizeRef.current = { width: fw, height: fh };
+          // Size the backing store to the canvas's actual on-screen box (×DPR
+          // for crispness), then letterbox the frame into it ourselves. This is
+          // robust regardless of CSS object-fit quirks on HiDPI displays.
+          const dpr = window.devicePixelRatio || 1;
+          const cssW = canvas.clientWidth;
+          const cssH = canvas.clientHeight;
+          if (cssW > 0 && cssH > 0 && fw > 0 && fh > 0) {
+            const bw = Math.max(1, Math.round(cssW * dpr));
+            const bh = Math.max(1, Math.round(cssH * dpr));
+            if (canvas.width !== bw) canvas.width = bw;
+            if (canvas.height !== bh) canvas.height = bh;
+            const ctx = canvas.getContext("2d");
+            if (ctx) {
+              const scale =
+                fitRef.current === "cover"
+                  ? Math.max(bw / fw, bh / fh)
+                  : Math.min(bw / fw, bh / fh);
+              const dw = fw * scale;
+              const dh = fh * scale;
+              const dx = (bw - dw) / 2;
+              const dy = (bh - dh) / 2;
+              ctx.fillStyle = "#000";
+              ctx.fillRect(0, 0, bw, bh);
+              ctx.imageSmoothingQuality = "high";
+              ctx.drawImage(bitmap, dx, dy, dw, dh);
+            }
           }
-          const ctx = canvas.getContext("2d");
-          if (ctx) ctx.drawImage(bitmap, 0, 0);
           bitmap.close();
           if (!hasScreenRef.current) {
             hasScreenRef.current = true;
@@ -220,6 +249,10 @@ function SessionContent() {
     inputEnabledRef.current = inputEnabled;
   }, [inputEnabled]);
 
+  useEffect(() => {
+    fitRef.current = fit;
+  }, [fit]);
+
   const sendInput = useCallback((message: InputMessage) => {
     clientRef.current?.sendInput(message);
   }, []);
@@ -244,11 +277,10 @@ function SessionContent() {
     if (!inputEnabledRef.current) return;
     const canvas = e.currentTarget;
     const rect = canvas.getBoundingClientRect();
-    // Canvas intrinsic size == the remote frame size, so letterbox math is exact.
-    const intrinsic =
-      canvas.width > 0 && canvas.height > 0
-        ? { width: canvas.width, height: canvas.height }
-        : null;
+    // Map against the real frame size (the canvas backing store is sized to the
+    // display box, not the frame). The letterbox math here mirrors exactly how
+    // onScreenFrame centers the frame, so clicks land on the right pixel.
+    const intrinsic = frameSizeRef.current;
     const coords = normalizedCoords(
       { x: e.clientX - rect.left, y: e.clientY - rect.top },
       { width: rect.width, height: rect.height },
@@ -411,12 +443,13 @@ function SessionContent() {
               className="absolute inset-0 outline-none"
             >
               {/* Primary display: the agent streams JPEG frames over the
-                  `screen` data channel, drawn here. object-fit letterboxes the
-                  canvas so input coords map exactly (see onMouse). */}
+                  `screen` data channel. onScreenFrame sizes the canvas to this
+                  box and letterboxes the frame into it (fit-aware), so it always
+                  fills the pane correctly on any DPI; input maps to the same
+                  rect (see onMouse). */}
               <canvas
                 ref={canvasRef}
                 className="h-full w-full bg-black"
-                style={{ objectFit: fit }}
                 onContextMenu={(e) => e.preventDefault()}
                 onMouseDown={(e) => onMouse(e, "down")}
                 onMouseUp={(e) => onMouse(e, "up")}
