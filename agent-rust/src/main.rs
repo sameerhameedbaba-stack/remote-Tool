@@ -83,6 +83,11 @@ async fn main() -> Result<()> {
         )
         .init();
 
+    // Must run before any GDI/window work so screen capture sees the true
+    // physical resolution on scaled (125%/150%) displays.
+    #[cfg(windows)]
+    set_process_dpi_aware();
+
     let cli = Cli::parse();
 
     match cli.command {
@@ -162,6 +167,27 @@ fn hold_console(outcome: &Result<()>) {
     let _ = std::io::stdout().flush();
     let mut line = String::new();
     let _ = std::io::stdin().read_line(&mut line);
+}
+
+/// Mark the process per-monitor DPI aware.
+///
+/// Without this, on a display scaled above 100% Windows reports a shrunken
+/// *logical* resolution to `GetSystemMetrics`, while the actual framebuffer that
+/// `BitBlt` copies from is the full *physical* resolution — so capture grabs only
+/// the top-left region (the "~70% of the screen" bug) and remote clicks land off
+/// target. Best-effort: log and continue if the call fails (older Windows).
+#[cfg(windows)]
+fn set_process_dpi_aware() {
+    use windows::Win32::UI::HiDpi::{
+        SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+    };
+    unsafe {
+        if let Err(e) =
+            SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)
+        {
+            tracing::warn!(error = %e, "SetProcessDpiAwarenessContext failed; capture may be scaled");
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
