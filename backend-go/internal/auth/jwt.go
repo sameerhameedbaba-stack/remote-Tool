@@ -11,20 +11,23 @@ import (
 // ErrInvalidToken is returned for any malformed, mis-signed, or expired JWT.
 var ErrInvalidToken = errors.New("auth: invalid token")
 
-// Claims are the technician JWT claims per docs/API.md.
+// Claims are the technician JWT claims per docs/API.md. Username is the tenant
+// subdomain identifier; Role is `admin` (platform) or `technician`.
 type Claims struct {
-	Email string `json:"email"`
-	Role  string `json:"role"`
+	Email    string `json:"email"`
+	Username string `json:"username"`
+	Role     string `json:"role"`
 	jwt.RegisteredClaims
 }
 
 // IssueJWT mints an HS256 technician access token valid for ttl.
-func IssueJWT(secret []byte, techID, email, role string, ttl time.Duration) (string, time.Time, error) {
+func IssueJWT(secret []byte, techID, email, username, role string, ttl time.Duration) (string, time.Time, error) {
 	now := time.Now()
 	expires := now.Add(ttl)
 	claims := Claims{
-		Email: email,
-		Role:  role,
+		Email:    email,
+		Username: username,
+		Role:     role,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   techID,
 			IssuedAt:  jwt.NewNumericDate(now),

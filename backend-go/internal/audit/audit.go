@@ -28,6 +28,8 @@ const (
 	EventFileTransfer         = "file.transfer"
 	EventClipboardSync        = "clipboard.sync"
 	EventInputCommandTry      = "input.command_attempt"
+	EventTechnicianCreated    = "technician.created"
+	EventTechnicianUpdated    = "technician.updated"
 )
 
 // bestEffortQueueSize bounds the background queue for best-effort writes; past

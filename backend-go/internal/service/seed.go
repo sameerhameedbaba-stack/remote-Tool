@@ -33,9 +33,11 @@ func SeedTechnician(ctx context.Context, st *store.Store, cfg *config.Config, lo
 	tech := &model.Technician{
 		ID:           uuid.NewString(),
 		Email:        cfg.SeedTechEmail,
+		Username:     "admin",
 		PasswordHash: hash,
 		DisplayName:  "Administrator",
 		Role:         model.RoleAdmin,
+		Active:       true,
 		CreatedAt:    time.Now().UTC(),
 	}
 	if err := st.CreateTechnician(ctx, tech); err != nil {

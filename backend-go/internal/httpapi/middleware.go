@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/remote-support/backend/internal/auth"
+	"github.com/remote-support/backend/internal/model"
 )
 
 // statusRecorder captures the response status for logging while remaining
@@ -147,6 +148,29 @@ func (s *Server) requireTech(next http.Handler) http.Handler {
 		claims, err := auth.ParseJWT(s.cfg.JWTSecret, tokenStr)
 		if err != nil {
 			writeError(w, http.StatusUnauthorized, "unauthorized", "invalid or expired token")
+			return
+		}
+		next.ServeHTTP(w, r.WithContext(withTech(r.Context(), claims)))
+	})
+}
+
+// requireAdmin authenticates a technician JWT and additionally requires the
+// platform super-admin role. Wraps requireTech's parsing so the admin surface
+// is closed to ordinary technicians.
+func (s *Server) requireAdmin(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		tokenStr := bearerToken(r)
+		if tokenStr == "" {
+			writeError(w, http.StatusUnauthorized, "unauthorized", "missing bearer token")
+			return
+		}
+		claims, err := auth.ParseJWT(s.cfg.JWTSecret, tokenStr)
+		if err != nil {
+			writeError(w, http.StatusUnauthorized, "unauthorized", "invalid or expired token")
+			return
+		}
+		if claims.Role != model.RoleAdmin {
+			writeError(w, http.StatusForbidden, "forbidden", "admin role required")
 			return
 		}
 		next.ServeHTTP(w, r.WithContext(withTech(r.Context(), claims)))

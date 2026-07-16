@@ -59,7 +59,18 @@ func (s *AuthService) Login(ctx context.Context, email, password, ip string) (*L
 		return nil, ErrUnauthorized
 	}
 
-	token, expires, err := auth.IssueJWT(s.cfg.JWTSecret, tech.ID, tech.Email, tech.Role, s.cfg.JWTTTL)
+	// A disabled tenant cannot log in (credentials are correct but access is
+	// revoked). Kept distinct from bad-password in the audit trail.
+	if !tech.Active {
+		s.audit.RecordBestEffort(ctx, audit.Entry{
+			EventType:    audit.EventAuthLoginFailed,
+			TechnicianID: audit.Ptr(tech.ID),
+			Metadata:     map[string]any{"email": email, "ip": ip, "reason": "disabled"},
+		})
+		return nil, ErrUnauthorized
+	}
+
+	token, expires, err := auth.IssueJWT(s.cfg.JWTSecret, tech.ID, tech.Email, tech.Username, tech.Role, s.cfg.JWTTTL)
 	if err != nil {
 		return nil, err
 	}

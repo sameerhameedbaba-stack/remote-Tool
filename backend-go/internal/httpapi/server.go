@@ -93,6 +93,14 @@ func (s *Server) Router() http.Handler {
 			r.Get("/audit", s.handleAudit)
 		})
 
+		// Platform super-admin (JWT + admin role): manage technician tenants.
+		r.Group(func(r chi.Router) {
+			r.Use(s.requireAdmin)
+			r.Post("/admin/technicians", s.handleCreateTechnician)
+			r.Get("/admin/technicians", s.handleListTechnicians)
+			r.Post("/admin/technicians/{id}/active", s.handleSetTechnicianActive)
+		})
+
 		// Agent/device (device token).
 		r.Group(func(r chi.Router) {
 			r.Use(s.requireDevice)

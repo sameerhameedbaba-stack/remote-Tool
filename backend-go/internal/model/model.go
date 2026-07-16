@@ -24,13 +24,18 @@ const (
 	DeviceStatusOffline = "offline"
 )
 
-// Technician is a console operator principal.
+// Technician is a console operator principal and, in the multi-tenant platform,
+// a tenant: `Username` maps to their subdomain (username.<domain>). Role `admin`
+// is the platform super-admin who creates technicians (`CreatedBy`).
 type Technician struct {
 	ID           string    `json:"id"`
 	Email        string    `json:"email"`
+	Username     string    `json:"username"`
 	PasswordHash string    `json:"-"`
 	DisplayName  string    `json:"display_name"`
 	Role         string    `json:"role"`
+	Active       bool      `json:"active"`
+	CreatedBy    *string   `json:"created_by,omitempty"`
 	CreatedAt    time.Time `json:"created_at"`
 }
 

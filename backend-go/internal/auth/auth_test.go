@@ -127,7 +127,7 @@ func TestParseDeviceTokenErrors(t *testing.T) {
 
 func TestJWTIssueAndParse(t *testing.T) {
 	secret := []byte("this-is-a-32-byte-minimum-secret-value")
-	token, expires, err := IssueJWT(secret, "tech-1", "a@b.com", "admin", time.Hour)
+	token, expires, err := IssueJWT(secret, "tech-1", "a@b.com", "admin", "admin", time.Hour)
 	if err != nil {
 		t.Fatalf("IssueJWT: %v", err)
 	}
@@ -145,7 +145,7 @@ func TestJWTIssueAndParse(t *testing.T) {
 
 func TestJWTRejectsWrongSecret(t *testing.T) {
 	secret := []byte("this-is-a-32-byte-minimum-secret-value")
-	token, _, _ := IssueJWT(secret, "tech-1", "a@b.com", "admin", time.Hour)
+	token, _, _ := IssueJWT(secret, "tech-1", "a@b.com", "admin", "admin", time.Hour)
 	if _, err := ParseJWT([]byte("another-32-byte-minimum-secret-value!"), token); err == nil {
 		t.Fatal("expected verification failure with wrong secret")
 	}
@@ -153,7 +153,7 @@ func TestJWTRejectsWrongSecret(t *testing.T) {
 
 func TestJWTRejectsExpired(t *testing.T) {
 	secret := []byte("this-is-a-32-byte-minimum-secret-value")
-	token, _, _ := IssueJWT(secret, "tech-1", "a@b.com", "admin", -time.Minute)
+	token, _, _ := IssueJWT(secret, "tech-1", "a@b.com", "admin", "admin", -time.Minute)
 	if _, err := ParseJWT(secret, token); err == nil {
 		t.Fatal("expected expired token to be rejected")
 	}

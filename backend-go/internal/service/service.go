@@ -16,6 +16,7 @@ import (
 // Services aggregates the domain services.
 type Services struct {
 	Auth     *AuthService
+	Admin    *AdminService
 	Device   *DeviceService
 	Session  *SessionService
 	Attended *AttendedService
@@ -26,6 +27,7 @@ type Services struct {
 func New(cfg *config.Config, st *store.Store, ca *cache.Cache, au *audit.Service, hub *signal.Hub, log *slog.Logger) *Services {
 	return &Services{
 		Auth:     &AuthService{cfg: cfg, store: st, audit: au, log: log},
+		Admin:    &AdminService{store: st, audit: au, log: log},
 		Device:   &DeviceService{store: st, cache: ca, log: log},
 		Session:  &SessionService{cfg: cfg, store: st, cache: ca, audit: au, hub: hub, log: log},
 		Attended: &AttendedService{cfg: cfg, store: st, cache: ca, audit: au, hub: hub, log: log},
