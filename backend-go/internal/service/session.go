@@ -132,11 +132,11 @@ func (s *SessionService) Get(ctx context.Context, id string) (*model.Session, er
 }
 
 // List returns sessions with optional filters, newest first.
-func (s *SessionService) List(ctx context.Context, status, deviceID string, limit int) ([]model.Session, error) {
+func (s *SessionService) List(ctx context.Context, technicianID, status, deviceID string, limit int) ([]model.Session, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 50
 	}
-	return s.store.ListSessions(ctx, status, deviceID, limit)
+	return s.store.ListSessions(ctx, technicianID, status, deviceID, limit)
 }
 
 // ActivateFromBanner is called when an agent acks banner:visible. It flips the

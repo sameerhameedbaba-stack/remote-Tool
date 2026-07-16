@@ -38,10 +38,18 @@ func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
 		limit = 200
 	}
 
+	// Tenant isolation: a technician may only read their own audit events; the
+	// platform admin may filter across technicians via the query param.
+	claims := techFrom(r.Context())
+	technicianID := q.Get("technician_id")
+	if claims.Role != model.RoleAdmin {
+		technicianID = claims.Subject
+	}
+
 	f := store.AuditFilter{
 		SessionID:    q.Get("session_id"),
 		DeviceID:     q.Get("device_id"),
-		TechnicianID: q.Get("technician_id"),
+		TechnicianID: technicianID,
 		EventType:    q.Get("event_type"),
 		Limit:        limit + 1, // fetch one extra to detect a next page
 	}

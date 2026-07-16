@@ -41,14 +41,16 @@ func (s *Store) GetSession(ctx context.Context, id string) (*model.Session, erro
 }
 
 // ListSessions returns sessions (most recent first) with optional filters.
-func (s *Store) ListSessions(ctx context.Context, status, deviceID string, limit int) ([]model.Session, error) {
+// A non-empty technicianID scopes results to that technician (tenant isolation).
+func (s *Store) ListSessions(ctx context.Context, technicianID, status, deviceID string, limit int) ([]model.Session, error) {
 	rows, err := s.pool.Query(ctx,
 		`SELECT id, device_id, technician_id, type, status, banner_visible, started_at, ended_at, created_at
 		 FROM sessions
 		 WHERE ($1 = '' OR status = $1)
 		   AND ($2 = '' OR device_id = $2::uuid)
+		   AND ($4 = '' OR technician_id = $4::uuid)
 		 ORDER BY created_at DESC
-		 LIMIT $3`, status, deviceID, limit)
+		 LIMIT $3`, status, deviceID, limit, technicianID)
 	if err != nil {
 		return nil, err
 	}

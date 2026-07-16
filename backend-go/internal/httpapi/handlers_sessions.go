@@ -60,7 +60,9 @@ func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 	if !validOptionalUUID(w, q.Get("device_id"), "device_id") {
 		return
 	}
-	sessions, err := s.svcs.Session.List(r.Context(), q.Get("status"), q.Get("device_id"), limit)
+	// Tenant isolation: a technician sees only their own sessions.
+	claims := techFrom(r.Context())
+	sessions, err := s.svcs.Session.List(r.Context(), claims.Subject, q.Get("status"), q.Get("device_id"), limit)
 	if err != nil {
 		writeServiceError(w, s.log, err)
 		return
