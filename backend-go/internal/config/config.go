@@ -36,6 +36,9 @@ type Config struct {
 	SessionCodeLength int
 
 	CORSAllowedOrigin string
+	// PlatformDomain is the apex domain (e.g. "tiefixy.com"). Tenant subdomains
+	// are <username>.PlatformDomain. Used to gate on-demand TLS issuance.
+	PlatformDomain string
 
 	SeedTechEmail    string
 	SeedTechPassword string
@@ -58,6 +61,7 @@ func Load() (*Config, error) {
 		RedisURL:             os.Getenv("REDIS_URL"),
 		AgentEnrollmentToken: os.Getenv("AGENT_ENROLLMENT_TOKEN"),
 		CORSAllowedOrigin:    getenv("CORS_ALLOWED_ORIGIN", "http://localhost:3000"),
+		PlatformDomain:       os.Getenv("PLATFORM_DOMAIN"),
 		SeedTechEmail:        os.Getenv("SEED_TECH_EMAIL"),
 		SeedTechPassword:     os.Getenv("SEED_TECH_PASSWORD"),
 		TURNRealm:            os.Getenv("TURN_REALM"),

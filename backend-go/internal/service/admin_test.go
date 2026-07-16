@@ -38,6 +38,32 @@ func TestValidateUsername(t *testing.T) {
 	}
 }
 
+func TestAllowTLSForHost_StaticCases(t *testing.T) {
+	// A nil-store AdminService is safe for cases that never reach a tenant
+	// lookup (apex/fixed subdomains, and early rejections).
+	s := &AdminService{}
+	const d = "tiefixy.com"
+
+	allow := []string{"tiefixy.com", "www.tiefixy.com", "admin.tiefixy.com", "connect.tiefixy.com", "TIEFIXY.COM", "admin.tiefixy.com:443"}
+	for _, h := range allow {
+		if !s.AllowTLSForHost(nil, h, d) {
+			t.Errorf("expected allow for %q", h)
+		}
+	}
+
+	deny := []string{"evil.com", "tiefixy.com.evil.com", "a.b.tiefixy.com", ""}
+	for _, h := range deny {
+		if s.AllowTLSForHost(nil, h, d) {
+			t.Errorf("expected deny for %q", h)
+		}
+	}
+
+	// No platform domain configured -> never allow.
+	if s.AllowTLSForHost(nil, "tiefixy.com", "") {
+		t.Error("expected deny when platformDomain is empty")
+	}
+}
+
 func TestNormalizeUsername(t *testing.T) {
 	cases := map[string]string{
 		"  Jane ":   "jane",

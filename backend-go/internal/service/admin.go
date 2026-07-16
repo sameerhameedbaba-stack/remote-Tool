@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net"
 	"regexp"
 	"strings"
 	"time"
@@ -101,6 +102,41 @@ func (s *AdminService) CreateTechnician(ctx context.Context, adminID string, in 
 	})
 	tech.PasswordHash = ""
 	return tech, nil
+}
+
+// AllowTLSForHost reports whether Caddy should issue an on-demand certificate
+// for `host` under `platformDomain`. Allowed: the apex and its fixed subdomains
+// (www/admin/connect), and any `<username>.platformDomain` matching an existing
+// technician tenant. This gates cert issuance so an attacker can't flood the CA
+// with requests for random subdomains.
+func (s *AdminService) AllowTLSForHost(ctx context.Context, host, platformDomain string) bool {
+	if platformDomain == "" {
+		return false
+	}
+	host = strings.ToLower(strings.TrimSpace(host))
+	host = strings.TrimSuffix(host, ".")
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	switch host {
+	case platformDomain,
+		"www." + platformDomain,
+		"admin." + platformDomain,
+		"connect." + platformDomain:
+		return true
+	}
+	suffix := "." + platformDomain
+	if !strings.HasSuffix(host, suffix) {
+		return false
+	}
+	sub := strings.TrimSuffix(host, suffix)
+	if sub == "" || strings.Contains(sub, ".") {
+		return false // exactly one label
+	}
+	if _, err := s.store.GetTechnicianByUsername(ctx, sub); err != nil {
+		return false
+	}
+	return true
 }
 
 // ListTechnicians returns the technicians owned by `adminID`.

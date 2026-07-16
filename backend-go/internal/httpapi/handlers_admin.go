@@ -8,6 +8,23 @@ import (
 	"github.com/remote-support/backend/internal/service"
 )
 
+// handleTLSCheck is Caddy's on-demand-TLS "ask" endpoint: it returns 200 only
+// for hostnames that should get a certificate (the apex, its fixed subdomains,
+// and existing tenant subdomains), and 403 otherwise. Reachable only on the
+// internal Docker network, so it needs no auth.
+func (s *Server) handleTLSCheck(w http.ResponseWriter, r *http.Request) {
+	domain := r.URL.Query().Get("domain")
+	if domain == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	if s.svcs.Admin.AllowTLSForHost(r.Context(), domain, s.cfg.PlatformDomain) {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	w.WriteHeader(http.StatusForbidden)
+}
+
 type createTechnicianRequest struct {
 	Email       string `json:"email"`
 	Username    string `json:"username"`

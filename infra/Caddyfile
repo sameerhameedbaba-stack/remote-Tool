@@ -1,60 +1,58 @@
 # Caddy reverse proxy for the Remote Support production deployment.
 #
-# One domain fronts everything, so the console and API share an origin (no CORS
-# headaches) and WebSocket signaling rides the same TLS cert:
-#   https://DOMAIN/            → web console
-#   https://DOMAIN/api/*       → Go backend REST API
-#   wss://DOMAIN/ws/*          → Go backend signaling (WebSocket upgrade)
-#   https://DOMAIN/healthz,/readyz → backend health
+# Multi-tenant routing (all served by one console + one backend):
+#   {$DOMAIN}, www           → apex (marketing / login)
+#   admin.{$DOMAIN}          → platform super-admin panel
+#   <username>.{$DOMAIN}     → per-technician tenant panel  (wildcard, on-demand TLS)
+#   connect.{$DOMAIN}        → host onboarding (enter code → download client)
 #
-# Caddy obtains and renews a Let's Encrypt certificate automatically as long as
-# DOMAIN's DNS points at this host and ports 80 + 443 are reachable.
+# The console (Next.js) renders the right panel from the Host header; /api, /ws
+# and health always go to the Go backend. Certificates: fixed hostnames use
+# HTTP-01; tenant subdomains are issued on demand, gated by the backend's
+# /internal/tls-check so only real tenants (and the fixed names) get a cert.
 
 {
-	# ACME account email (optional but recommended for expiry notices).
 	email {$ACME_EMAIL}
+	on_demand_tls {
+		ask http://backend:8080/internal/tls-check
+	}
 }
 
-{$DOMAIN} {
+# Shared app routing: API/WS/health to backend, everything else to the console.
+(app_routes) {
 	encode gzip
-
-	# Backend: REST API, WebSocket signaling, and health endpoints.
 	@backend path /api/* /ws/* /healthz /readyz
 	handle @backend {
 		reverse_proxy backend:8080
 	}
-
-	# Everything else: the Next.js console.
 	handle {
 		reverse_proxy console:3000
 	}
 }
 
+# Apex + www: marketing / login.
+{$DOMAIN}, www.{$DOMAIN} {
+	import app_routes
+}
+
+# Platform super-admin panel.
+admin.{$DOMAIN} {
+	import app_routes
+}
+
 # ---------------------------------------------------------------------------
 # Host onboarding — connect.DOMAIN
-#
-# Where an end user goes to join a session: they enter the 9-digit code the
-# technician gave them and the page hands back the agent binary, named so it
-# auto-configures itself and joins on launch (no terminal, no typing URLs).
-#
-# The REST API + WebSocket signaling are proxied here as well, so every request
-# the end user's machine makes hits this single, freshly-provisioned host —
-# which also side-steps any stale DNS cached for the apex domain.
+# End user enters the 9-digit code and downloads the client, named so it
+# auto-configures itself and joins on launch.
 # ---------------------------------------------------------------------------
 connect.{$DOMAIN} {
 	encode gzip
 
-	# Backend REST + signaling (the downloaded agent talks to us directly).
 	@backend path /api/* /ws/* /healthz /readyz
 	handle @backend {
 		reverse_proxy backend:8080
 	}
 
-	# One-click download. The response is the generic agent binary named
-	# RemoteSupport--<host>--<code>.exe, so the agent reads the server + code
-	# out of its own file name and joins on launch. The landing page only ever
-	# requests a 9-digit code; a malformed name simply makes the agent fall back
-	# to prompting, so this degrades safely.
 	@dl path /dl
 	handle @dl {
 		root * /srv/agent
@@ -64,9 +62,21 @@ connect.{$DOMAIN} {
 		file_server
 	}
 
-	# Everything else: the static "enter your code" landing page.
 	handle {
 		root * /srv/connect
 		file_server
 	}
+}
+
+# ---------------------------------------------------------------------------
+# Technician tenant panels — <username>.DOMAIN
+# One wildcard block serves every technician's subdomain. Certificates are
+# issued on demand per hostname and gated by the backend, so an attacker cannot
+# flood the CA with requests for non-existent subdomains.
+# ---------------------------------------------------------------------------
+*.{$DOMAIN} {
+	tls {
+		on_demand
+	}
+	import app_routes
 }

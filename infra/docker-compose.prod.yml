@@ -92,6 +92,9 @@ services:
       SESSION_CODE_LENGTH: ${SESSION_CODE_LENGTH:-9}
       # Same-origin in production (console + API share the domain via Caddy).
       CORS_ALLOWED_ORIGIN: https://${DOMAIN}
+      # Apex domain for the multi-tenant platform: tenant subdomains are
+      # <username>.PLATFORM_DOMAIN; gates on-demand TLS issuance.
+      PLATFORM_DOMAIN: ${DOMAIN}
       SEED_TECH_EMAIL: ${SEED_TECH_EMAIL:-}
       SEED_TECH_PASSWORD: ${SEED_TECH_PASSWORD:-}
       # ICE handed to both peers: your public STUN + TURN (coturn below).

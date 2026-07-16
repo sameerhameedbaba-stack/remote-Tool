@@ -69,6 +69,9 @@ func (s *Server) Router() http.Handler {
 	r.Get("/healthz", s.handleHealthz)
 	r.Get("/readyz", s.handleReadyz)
 
+	// Caddy on-demand-TLS gate (internal network only).
+	r.Get("/internal/tls-check", s.handleTLSCheck)
+
 	// WebSocket signaling (auth handled inside the handlers).
 	r.Get("/ws/signal", s.handleSignalWS)
 	r.Get("/ws/agent", s.handleAgentWS)
