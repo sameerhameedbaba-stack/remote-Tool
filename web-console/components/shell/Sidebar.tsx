@@ -13,6 +13,8 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/cn";
+import { useAuth } from "@/lib/auth";
+import { tenantUsername } from "@/lib/tenant";
 import { RelayHealthPill } from "./RelayHealth";
 
 interface NavItem {
@@ -65,6 +67,10 @@ function NavLink({ item }: { item: NavItem }) {
 }
 
 export function Sidebar() {
+  const { technician } = useAuth();
+  const isAdmin = technician?.role === "admin";
+  const tenant = tenantUsername();
+
   return (
     <aside className="hidden w-60 shrink-0 flex-col border-r border-line bg-surface lg:flex">
       {/* Wordmark */}
@@ -72,9 +78,14 @@ export function Sidebar() {
         <span className="grid h-7 w-7 place-items-center rounded-lg bg-accent text-accent-fg">
           <ShieldCheck className="h-4 w-4" aria-hidden />
         </span>
-        <span className="text-[15px] font-semibold tracking-tight text-fg">
-          Remote<span className="text-fg-muted">Support</span>
-        </span>
+        <div className="min-w-0 leading-tight">
+          <div className="truncate text-[15px] font-semibold tracking-tight text-fg">
+            Remote<span className="text-fg-muted">Support</span>
+          </div>
+          {tenant && (
+            <div className="truncate text-[11px] text-fg-muted">{tenant}</div>
+          )}
+        </div>
       </div>
 
       <nav className="flex-1 space-y-6 overflow-y-auto px-3 py-4">
@@ -83,16 +94,19 @@ export function Sidebar() {
             <NavLink key={item.href} item={item} />
           ))}
         </div>
-        <div>
-          <div className="px-3 pb-1.5 text-[11px] font-semibold uppercase tracking-wider text-fg-muted">
-            Administration
+        {/* Administration is only meaningful for the platform super-admin. */}
+        {isAdmin && (
+          <div>
+            <div className="px-3 pb-1.5 text-[11px] font-semibold uppercase tracking-wider text-fg-muted">
+              Administration
+            </div>
+            <div className="space-y-0.5">
+              {ADMIN.map((item) => (
+                <NavLink key={item.href} item={item} />
+              ))}
+            </div>
           </div>
-          <div className="space-y-0.5">
-            {ADMIN.map((item) => (
-              <NavLink key={item.href} item={item} />
-            ))}
-          </div>
-        </div>
+        )}
       </nav>
 
       {/* Relay / system health */}
