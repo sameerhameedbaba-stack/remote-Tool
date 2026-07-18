@@ -14,6 +14,8 @@ func TestDecodePeers_Shapes(t *testing.T) {
 		"peers wrap":   `{"peers":[{"guid":"123456789","hostname":"pc1","status":"online"}]}`,
 		"status int":   `{"rows":[{"id":"123456789","hostname":"pc1","status":1}]}`,
 		"status false": `{"data":[{"id":"123456789","hostname":"pc1","status":"offline"}]}`,
+		// The real RustDesk Server Pro /api/devices shape (device_name + is_online).
+		"rustdesk pro": `{"total":1,"data":[{"id":"123456789","device_name":"pc1","username":"Admin","os":"windows / Windows 11","is_online":true,"last_online":"2026-07-18T16:10:16"}]}`,
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -33,6 +35,31 @@ func TestDecodePeers_Shapes(t *testing.T) {
 				t.Fatalf("%s: online=%v want %v", name, p.Online, wantOnline)
 			}
 		})
+	}
+}
+
+func TestNormalizeOS(t *testing.T) {
+	cases := map[string]string{
+		"windows / Windows 11 Home Single Language - 11 (26200)": "windows",
+		"Mac OS X 14":  "macos",
+		"Ubuntu Linux": "linux",
+		"":             "",
+	}
+	for in, want := range cases {
+		if got := normalizeOS(in); got != want {
+			t.Fatalf("normalizeOS(%q) = %q want %q", in, got, want)
+		}
+	}
+}
+
+func TestEmptyObjectDecodesToNoPeers(t *testing.T) {
+	// RustDesk returns a bare {} when the fleet is empty; must not error.
+	wires, err := decodePeers([]byte(`{}`))
+	if err != nil {
+		t.Fatalf("decode {}: %v", err)
+	}
+	if len(wires) != 0 {
+		t.Fatalf("want 0 peers, got %d", len(wires))
 	}
 }
 

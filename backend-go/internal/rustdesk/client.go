@@ -62,33 +62,63 @@ type Peer struct {
 // peerWire tolerates the range of field names RustDesk Pro has used across
 // versions (id vs guid, online vs status, os vs platform, etc.).
 type peerWire struct {
-	ID       string          `json:"id"`
-	GUID     string          `json:"guid"`
-	Hostname string          `json:"hostname"`
-	Username string          `json:"username"`
-	User     string          `json:"user"`
-	OS       string          `json:"os"`
-	Platform string          `json:"platform"`
-	Online    *bool           `json:"online"`
-	Status    json.RawMessage `json:"status"` // may be bool, "online", or 1/0
-	LastOnline string         `json:"last_online"`
-	LastSeen  string          `json:"last_seen"`
-	Group     string          `json:"group"`
-	GroupName string          `json:"group_name"`
-	Tag       string          `json:"tag"`
+	ID         string          `json:"id"`
+	GUID       string          `json:"guid"`
+	Hostname   string          `json:"hostname"`
+	DeviceName string          `json:"device_name"` // RustDesk Pro /api/devices
+	Alias      string          `json:"alias"`
+	Username   string          `json:"username"`
+	User       string          `json:"user"`
+	OS         string          `json:"os"`
+	Platform   string          `json:"platform"`
+	Online     *bool           `json:"online"`
+	IsOnline   *bool           `json:"is_online"` // RustDesk Pro /api/devices
+	Status     json.RawMessage `json:"status"`    // may be bool, "online", or 1/0
+	LastOnline string          `json:"last_online"`
+	LastSeen   string          `json:"last_seen"`
+	Group      string          `json:"group"`
+	GroupName  string          `json:"group_name"`
+	Tag        string          `json:"tag"`
 }
 
 func (w peerWire) toPeer() Peer {
 	p := Peer{
 		ID:       firstNonEmpty(w.ID, w.GUID),
-		Hostname: w.Hostname,
+		Hostname: firstNonEmpty(w.DeviceName, w.Hostname, w.Alias),
 		Username: firstNonEmpty(w.Username, w.User),
-		OS:       firstNonEmpty(w.OS, w.Platform),
+		OS:       normalizeOS(firstNonEmpty(w.OS, w.Platform)),
 		LastSeen: firstNonEmpty(w.LastSeen, w.LastOnline),
 		Group:    firstNonEmpty(w.Group, w.GroupName, w.Tag),
 	}
-	p.Online = interpretOnline(w.Online, w.Status)
+	// Presence: RustDesk Pro /api/devices uses is_online; older shapes use
+	// online or a status field. Take whichever is present.
+	online := w.Online
+	if online == nil {
+		online = w.IsOnline
+	}
+	p.Online = interpretOnline(online, w.Status)
 	return p
+}
+
+// normalizeOS collapses RustDesk's verbose platform string (e.g.
+// "windows / Windows 11 Home Single Language - 11 (26200)") down to a simple
+// token the console's OS icon understands.
+func normalizeOS(s string) string {
+	l := strings.ToLower(s)
+	switch {
+	case strings.Contains(l, "windows"):
+		return "windows"
+	case strings.Contains(l, "mac") || strings.Contains(l, "darwin") || strings.Contains(l, "osx"):
+		return "macos"
+	case strings.Contains(l, "linux"):
+		return "linux"
+	case strings.Contains(l, "android"):
+		return "android"
+	case strings.Contains(l, "ios"):
+		return "ios"
+	default:
+		return l
+	}
 }
 
 // interpretOnline normalizes the several ways RustDesk Pro has encoded presence.

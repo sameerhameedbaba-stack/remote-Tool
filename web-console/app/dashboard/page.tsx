@@ -187,7 +187,9 @@ function FleetCard({
                   <div className="truncate text-[12px] text-fg-muted">
                     ID {m.rustdesk_id}
                     {m.username ? ` · ${m.username}` : ""}
-                    {m.last_seen ? ` · seen ${m.last_seen}` : ""}
+                    {!m.online && m.last_seen
+                      ? ` · seen ${timeAgo(m.last_seen)}`
+                      : ""}
                   </div>
                 </div>
                 <PresenceBadge
