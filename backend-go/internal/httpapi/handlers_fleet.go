@@ -38,3 +38,22 @@ func (s *Server) handleListFleet(w http.ResponseWriter, r *http.Request) {
 		Enabled: s.svcs.Fleet.Enabled(),
 	})
 }
+
+// connectInfoResponse is the non-secret info the branded connect page and the
+// downloaded client need to reach the RustDesk server. The server public key is
+// public by design; the API token is never exposed here.
+type connectInfoResponse struct {
+	ServerID  string `json:"server_id"`
+	PublicKey string `json:"public_key"`
+	Enabled   bool   `json:"enabled"`
+}
+
+// handleConnectInfo is public (served on connect.<domain>): it lets the branded
+// download page render the correct server and offer a manual-setup fallback.
+func (s *Server) handleConnectInfo(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, connectInfoResponse{
+		ServerID:  s.cfg.RustDeskServerID,
+		PublicKey: s.cfg.RustDeskPubKey,
+		Enabled:   s.svcs.Fleet.Enabled(),
+	})
+}
