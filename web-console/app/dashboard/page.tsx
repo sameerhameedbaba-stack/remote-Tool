@@ -137,10 +137,12 @@ function AttendedCodeCard({
 function FleetCard({
   members,
   enabled,
+  unavailable,
   loading,
 }: {
   members: FleetMember[];
   enabled: boolean;
+  unavailable: boolean;
   loading: boolean;
 }) {
   const online = members.filter((m) => m.online).length;
@@ -151,7 +153,7 @@ function FleetCard({
           title="Unattended machines"
           description="Computers running your branded client — online status, connect anytime."
         />
-        {enabled && members.length > 0 && (
+        {enabled && !unavailable && members.length > 0 && (
           <span className="text-[12px] text-fg-muted">
             {online} online · {members.length} total
           </span>
@@ -166,6 +168,12 @@ function FleetCard({
             title="Fleet not connected yet"
             description="Once your RustDesk server API token is configured, the machines that install your branded client appear here with live on/off status."
           />
+        ) : unavailable ? (
+          <EmptyState
+            icon={<Server className="h-5 w-5" aria-hidden />}
+            title="Fleet temporarily unavailable"
+            description="Couldn't reach the RustDesk server just now — retrying automatically. Your other dashboard data is unaffected."
+          />
         ) : members.length === 0 ? (
           <EmptyState
             icon={<Server className="h-5 w-5" aria-hidden />}
@@ -174,9 +182,9 @@ function FleetCard({
           />
         ) : (
           <ul className="divide-y divide-line">
-            {members.map((m) => (
+            {members.map((m, i) => (
               <li
-                key={m.rustdesk_id}
+                key={m.rustdesk_id || `${m.hostname}-${i}`}
                 className="flex items-center gap-3 px-5 py-3 transition-colors hover:bg-surface-hover"
               >
                 <OsIcon os={m.os} className="h-4 w-4 text-fg-muted" />
@@ -196,19 +204,26 @@ function FleetCard({
                   status={m.online ? "online" : "offline"}
                   size="sm"
                 />
-                <a
-                  href={`rustdesk://connection/new/${encodeURIComponent(m.rustdesk_id)}`}
-                  className={cn(
-                    "inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-[13px] font-medium transition-colors",
-                    m.online
-                      ? "bg-accent text-white hover:bg-accent/90"
-                      : "pointer-events-none bg-surface-hover text-fg-muted opacity-60",
-                  )}
-                  aria-disabled={!m.online}
-                >
-                  <ExternalLink className="h-3.5 w-3.5" aria-hidden />
-                  Connect
-                </a>
+                {m.online ? (
+                  <a
+                    href={`rustdesk://connection/new/${encodeURIComponent(m.rustdesk_id)}`}
+                    className="inline-flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-[13px] font-medium text-white transition-colors hover:bg-accent/90"
+                  >
+                    <ExternalLink className="h-3.5 w-3.5" aria-hidden />
+                    Connect
+                  </a>
+                ) : (
+                  // Offline: render a non-actionable span (not a focusable link)
+                  // so keyboard users can't fire the rustdesk:// URI for an
+                  // unreachable machine.
+                  <span
+                    className="inline-flex cursor-not-allowed items-center gap-1.5 rounded-md bg-surface-hover px-3 py-1.5 text-[13px] font-medium text-fg-muted opacity-60"
+                    aria-disabled
+                  >
+                    <ExternalLink className="h-3.5 w-3.5" aria-hidden />
+                    Connect
+                  </span>
+                )}
               </li>
             ))}
           </ul>
@@ -226,6 +241,7 @@ function DashboardContent() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [fleet, setFleet] = useState<FleetMember[]>([]);
   const [fleetEnabled, setFleetEnabled] = useState(false);
+  const [fleetUnavailable, setFleetUnavailable] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -240,33 +256,54 @@ function DashboardContent() {
   const load = useCallback(
     async (signal?: AbortSignal) => {
       if (!token) return;
+      // Core data (devices + sessions) governs the page. Its failure surfaces
+      // the error banner.
       try {
-        const [devRes, sesRes, fleetRes] = await Promise.all([
+        const [devRes, sesRes] = await Promise.all([
           listDevices(token, {}, signal),
           listSessions(token, { limit: 8 }, signal),
-          listFleet(token, signal),
         ]);
         setDevices(devRes.devices);
         setSessions(sesRes.sessions);
-        setFleet(fleetRes.members);
-        setFleetEnabled(fleetRes.enabled);
         setError(null);
       } catch (err) {
-        if (isNetworkError(err)) return;
-        setError(errorMessage(err, "Failed to load data"));
+        if (!isNetworkError(err)) {
+          setError(errorMessage(err, "Failed to load data"));
+        }
       } finally {
         setLoading(false);
+      }
+
+      // Fleet (RustDesk) is a SECONDARY integration: fetch it separately so a
+      // RustDesk outage degrades only this panel and never blanks the core
+      // dashboard or raises the page-level error banner.
+      try {
+        const fleetRes = await listFleet(token, signal);
+        setFleet(fleetRes.members);
+        setFleetEnabled(fleetRes.enabled);
+        setFleetUnavailable(fleetRes.unavailable === true);
+      } catch (err) {
+        if (!isNetworkError(err)) {
+          setFleetUnavailable(true);
+        }
       }
     },
     [token],
   );
 
   useEffect(() => {
-    const controller = new AbortController();
-    void load(controller.signal);
-    const id = setInterval(() => void load(), PRESENCE_POLL_MS);
+    // Each cycle (initial + every poll) gets its own AbortController so an
+    // in-flight request is cancelled on unmount and slow polls don't overlap.
+    let current: AbortController | null = null;
+    const run = () => {
+      current?.abort();
+      current = new AbortController();
+      void load(current.signal);
+    };
+    run();
+    const id = setInterval(run, PRESENCE_POLL_MS);
     return () => {
-      controller.abort();
+      current?.abort();
       clearInterval(id);
     };
   }, [load]);
@@ -475,7 +512,12 @@ function DashboardContent() {
       </div>
 
       {/* Unattended fleet (RustDesk-managed) */}
-      <FleetCard members={fleet} enabled={fleetEnabled} loading={loading} />
+      <FleetCard
+        members={fleet}
+        enabled={fleetEnabled}
+        unavailable={fleetUnavailable}
+        loading={loading}
+      />
 
       {/* Recent sessions */}
       <Card className="mt-6 p-0">

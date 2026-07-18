@@ -1,7 +1,9 @@
 package httpapi
 
 import (
+	"context"
 	"net/http"
+	"time"
 
 	"github.com/remote-support/backend/internal/model"
 	"github.com/remote-support/backend/internal/service"
@@ -10,24 +12,43 @@ import (
 type fleetResponse struct {
 	Members []service.FleetMember `json:"members"`
 	Enabled bool                  `json:"enabled"`
+	// Unavailable is true when RustDesk is configured but its API failed for
+	// this request (down/slow/5xx). The panel shows a "temporarily unavailable"
+	// hint instead of implying the fleet is empty.
+	Unavailable bool `json:"unavailable"`
 }
+
+// fleetTimeout bounds the RustDesk call so a hung engine can't hold the request
+// (and, on the frontend, the dashboard) for long.
+const fleetTimeout = 6 * time.Second
 
 // handleListFleet returns the RustDesk-managed machines visible to the caller.
 // A technician is scoped to their own group (username); the platform admin sees
-// the whole fleet. If RustDesk isn't configured yet, members is [] and enabled
-// is false so the panel can show a "not connected" hint instead of an error.
+// the whole fleet. It NEVER hard-fails: RustDesk being unconfigured, down, or
+// slow yields a 200 with an empty list (and unavailable=true on a real failure)
+// so a secondary-integration hiccup can't take down the dashboard.
 func (s *Server) handleListFleet(w http.ResponseWriter, r *http.Request) {
 	claims := techFrom(r.Context())
 
-	// Tenant isolation: non-admins only see machines tagged with their username.
+	// Tenant isolation: non-admins only see machines in their own group; the
+	// platform admin (empty group) sees the whole fleet.
 	group := claims.Username
 	if claims.Role == model.RoleAdmin {
 		group = "" // whole fleet
 	}
 
-	members, err := s.svcs.Fleet.ListForTechnician(r.Context(), group)
+	ctx, cancel := context.WithTimeout(r.Context(), fleetTimeout)
+	defer cancel()
+
+	members, err := s.svcs.Fleet.ListForTechnician(ctx, group)
 	if err != nil {
-		writeServiceError(w, s.log, err)
+		// Degrade gracefully: log and report unavailable, never a 500.
+		s.log.Warn("fleet unavailable", "err", err)
+		writeJSON(w, http.StatusOK, fleetResponse{
+			Members:     []service.FleetMember{},
+			Enabled:     s.svcs.Fleet.Enabled(),
+			Unavailable: true,
+		})
 		return
 	}
 	if members == nil {

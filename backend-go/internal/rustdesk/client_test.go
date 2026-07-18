@@ -19,7 +19,7 @@ func TestDecodePeers_Shapes(t *testing.T) {
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
-			wires, err := decodePeers([]byte(body))
+			wires, _, err := decodePeers([]byte(body))
 			if err != nil {
 				t.Fatalf("decode: %v", err)
 			}
@@ -54,12 +54,52 @@ func TestNormalizeOS(t *testing.T) {
 
 func TestEmptyObjectDecodesToNoPeers(t *testing.T) {
 	// RustDesk returns a bare {} when the fleet is empty; must not error.
-	wires, err := decodePeers([]byte(`{}`))
+	wires, total, err := decodePeers([]byte(`{}`))
 	if err != nil {
 		t.Fatalf("decode {}: %v", err)
 	}
-	if len(wires) != 0 {
-		t.Fatalf("want 0 peers, got %d", len(wires))
+	if len(wires) != 0 || total != 0 {
+		t.Fatalf("want 0 peers/total, got %d/%d", len(wires), total)
+	}
+}
+
+// Tenant isolation: a scoped technician must see ONLY exact-group matches;
+// ungrouped and other-group machines are excluded. The admin (group "") sees
+// all. This is the critical multi-tenant invariant.
+func TestListPeers_ScopeExcludesUngroupedAndOtherGroups(t *testing.T) {
+	body := `{"total":3,"data":[
+		{"id":"111","device_name":"alice-pc","is_online":true,"group":"alice"},
+		{"id":"999","device_name":"ungrouped-pc","is_online":true,"group":""},
+		{"id":"888","device_name":"bob-pc","is_online":true,"group":"bob"}
+	]}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Serve the fixture on page 1, an empty page afterwards to end paging.
+		if r.URL.Query().Get("current") == "1" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(body))
+			return
+		}
+		_, _ = w.Write([]byte(`{"total":3,"data":[]}`))
+	}))
+	defer srv.Close()
+	c := New(srv.URL, "tok")
+
+	// Technician "alice" sees only her own machine — not ungrouped, not bob's.
+	got, err := c.ListPeers(context.Background(), "alice")
+	if err != nil {
+		t.Fatalf("ListPeers(alice): %v", err)
+	}
+	if len(got) != 1 || got[0].ID != "111" {
+		t.Fatalf("alice scope leak: %+v", got)
+	}
+
+	// Admin (empty group) sees all three.
+	all, err := c.ListPeers(context.Background(), "")
+	if err != nil {
+		t.Fatalf("ListPeers(admin): %v", err)
+	}
+	if len(all) != 3 {
+		t.Fatalf("admin should see 3, got %d: %+v", len(all), all)
 	}
 }
 
@@ -92,7 +132,7 @@ func TestListPeers_AuthHeaderAndGroupFilter(t *testing.T) {
 	if gotAuth != "Bearer secret-token" {
 		t.Fatalf("auth header = %q", gotAuth)
 	}
-	if want := "/api/devices?current=1&pageSize=1000"; gotPath != want {
+	if want := "/api/devices?current=1&pageSize=200"; gotPath != want {
 		t.Fatalf("path = %q want %q", gotPath, want)
 	}
 	if len(peers) != 1 || peers[0].ID != "111" {

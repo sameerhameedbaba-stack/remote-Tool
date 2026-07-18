@@ -343,6 +343,9 @@ export interface FleetResponse {
   // false when the RustDesk API token isn't wired in yet: the panel shows a
   // "connect your RustDesk server" hint instead of an empty list.
   enabled: boolean;
+  // true when RustDesk is configured but its API failed for this request
+  // (down/slow): the panel shows a "temporarily unavailable" hint.
+  unavailable?: boolean;
 }
 
 export function listFleet(

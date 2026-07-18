@@ -41,7 +41,10 @@ func New(baseURL, token string) *Client {
 	return &Client{
 		baseURL: strings.TrimRight(baseURL, "/"),
 		token:   token,
-		http:    &http.Client{Timeout: 10 * time.Second},
+		// Interactive backstop: the fleet call sits on the dashboard's hot path,
+		// so a hung RustDesk must not pin a request for long. Callers should also
+		// pass a context deadline; this is the safety net if they don't.
+		http: &http.Client{Timeout: 8 * time.Second},
 	}
 }
 
@@ -88,7 +91,10 @@ func (w peerWire) toPeer() Peer {
 		Username: firstNonEmpty(w.Username, w.User),
 		OS:       normalizeOS(firstNonEmpty(w.OS, w.Platform)),
 		LastSeen: firstNonEmpty(w.LastSeen, w.LastOnline),
-		Group:    firstNonEmpty(w.Group, w.GroupName, w.Tag),
+		// Isolation key: only the authoritative group fields. A free-form,
+		// user-settable "tag" must NOT decide cross-tenant visibility, so it is
+		// deliberately excluded here (it may still be shown elsewhere as a label).
+		Group: firstNonEmpty(w.Group, w.GroupName),
 	}
 	// Presence: RustDesk Pro /api/devices uses is_online; older shapes use
 	// online or a status field. Take whichever is present.
@@ -143,60 +149,82 @@ type listWrap struct {
 	Total int        `json:"total"`
 }
 
-// ListPeers returns every peer the server knows about. group, when non-empty,
-// filters server-side (falling back to client-side filter if the server
-// ignores it) so a tenant only sees its own machines.
+// pageSize is the per-request page for /api/devices; maxPages bounds the paging
+// loop so a misbehaving server can never spin it forever (well above the Pro
+// Basic device cap).
+const (
+	pageSize = 200
+	maxPages = 100
+)
+
+// ListPeers returns the peers the server knows about, paginating so fleets
+// larger than one page are not silently truncated.
+//
+// Tenant scope: when group is non-empty (a technician tenant), ONLY machines
+// whose authoritative RustDesk group equals that value are returned — machines
+// with a different group OR no group are excluded. The platform admin passes
+// group == "" and receives the whole fleet. Filtering is client-side because
+// the server-side filter param name is not stable across RustDesk versions.
 func (c *Client) ListPeers(ctx context.Context, group string) ([]Peer, error) {
 	if !c.Configured() {
 		return nil, ErrNotConfigured
 	}
 	// RustDesk Server Pro's console API (Ant Design Pro style) lists machines at
 	// /api/devices with current/pageSize paging. (/api/peers exists on some
-	// versions but is 403 for console API tokens.) Group filtering is done
-	// client-side below because the server-side param name isn't stable across
-	// versions — safer to fetch and filter here.
-	path := "/api/devices?current=1&pageSize=1000"
-	body, err := c.get(ctx, path)
-	if err != nil {
-		return nil, err
-	}
-
-	wires, err := decodePeers(body)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]Peer, 0, len(wires))
-	for _, w := range wires {
-		p := w.toPeer()
-		if group != "" && p.Group != "" && !strings.EqualFold(p.Group, group) {
-			continue // server ignored the filter; enforce it here
+	// versions but is 403 for console API tokens.)
+	out := []Peer{}
+	for page := 1; page <= maxPages; page++ {
+		body, err := c.get(ctx, fmt.Sprintf("/api/devices?current=%d&pageSize=%d", page, pageSize))
+		if err != nil {
+			return nil, err
 		}
-		out = append(out, p)
+		wires, total, err := decodePeers(body)
+		if err != nil {
+			return nil, err
+		}
+		if len(wires) == 0 {
+			break
+		}
+		for _, w := range wires {
+			p := w.toPeer()
+			if p.ID == "" {
+				continue // no usable RustDesk ID → cannot display or connect
+			}
+			if group != "" && !strings.EqualFold(p.Group, group) {
+				continue // scoped tenant: exclude other-group and ungrouped machines
+			}
+			out = append(out, p)
+		}
+		// Done when the page was short or we've reached the server's reported total.
+		if len(wires) < pageSize || (total > 0 && page*pageSize >= total) {
+			break
+		}
 	}
 	return out, nil
 }
 
-// decodePeers accepts either a wrapped object or a bare array of peers.
-func decodePeers(body []byte) ([]peerWire, error) {
+// decodePeers accepts either a wrapped object or a bare array of peers, and
+// returns the server's reported total (0 when absent) for pagination.
+func decodePeers(body []byte) ([]peerWire, int, error) {
 	trimmed := strings.TrimSpace(string(body))
 	if strings.HasPrefix(trimmed, "[") {
 		var arr []peerWire
 		if err := json.Unmarshal(body, &arr); err != nil {
-			return nil, fmt.Errorf("rustdesk: decode peer array: %w", err)
+			return nil, 0, fmt.Errorf("rustdesk: decode peer array: %w", err)
 		}
-		return arr, nil
+		return arr, len(arr), nil
 	}
 	var w listWrap
 	if err := json.Unmarshal(body, &w); err != nil {
-		return nil, fmt.Errorf("rustdesk: decode peer object: %w", err)
+		return nil, 0, fmt.Errorf("rustdesk: decode peer object: %w", err)
 	}
 	switch {
 	case len(w.Data) > 0:
-		return w.Data, nil
+		return w.Data, w.Total, nil
 	case len(w.Peers) > 0:
-		return w.Peers, nil
+		return w.Peers, w.Total, nil
 	default:
-		return w.Rows, nil
+		return w.Rows, w.Total, nil
 	}
 }
 
