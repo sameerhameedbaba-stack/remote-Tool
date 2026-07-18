@@ -65,7 +65,7 @@ func TestListPeers_AuthHeaderAndGroupFilter(t *testing.T) {
 	if gotAuth != "Bearer secret-token" {
 		t.Fatalf("auth header = %q", gotAuth)
 	}
-	if want := "/api/peers?pageSize=1000&group=acme"; gotPath != want {
+	if want := "/api/devices?current=1&pageSize=1000"; gotPath != want {
 		t.Fatalf("path = %q want %q", gotPath, want)
 	}
 	if len(peers) != 1 || peers[0].ID != "111" {

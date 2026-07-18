@@ -120,11 +120,12 @@ func (c *Client) ListPeers(ctx context.Context, group string) ([]Peer, error) {
 	if !c.Configured() {
 		return nil, ErrNotConfigured
 	}
-	// /api/peers is the Pro device list; page size kept generous for small fleets.
-	path := "/api/peers?pageSize=1000"
-	if group != "" {
-		path += "&group=" + group
-	}
+	// RustDesk Server Pro's console API (Ant Design Pro style) lists machines at
+	// /api/devices with current/pageSize paging. (/api/peers exists on some
+	// versions but is 403 for console API tokens.) Group filtering is done
+	// client-side below because the server-side param name isn't stable across
+	// versions — safer to fetch and filter here.
+	path := "/api/devices?current=1&pageSize=1000"
 	body, err := c.get(ctx, path)
 	if err != nil {
 		return nil, err
