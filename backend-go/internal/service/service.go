@@ -9,6 +9,7 @@ import (
 	"github.com/remote-support/backend/internal/audit"
 	"github.com/remote-support/backend/internal/cache"
 	"github.com/remote-support/backend/internal/config"
+	"github.com/remote-support/backend/internal/rustdesk"
 	"github.com/remote-support/backend/internal/signal"
 	"github.com/remote-support/backend/internal/store"
 )
@@ -21,6 +22,7 @@ type Services struct {
 	Session  *SessionService
 	Attended *AttendedService
 	Agent    *AgentService
+	Fleet    *FleetService
 }
 
 // New wires the services with their shared dependencies.
@@ -32,5 +34,6 @@ func New(cfg *config.Config, st *store.Store, ca *cache.Cache, au *audit.Service
 		Session:  &SessionService{cfg: cfg, store: st, cache: ca, audit: au, hub: hub, log: log},
 		Attended: &AttendedService{cfg: cfg, store: st, cache: ca, audit: au, hub: hub, log: log},
 		Agent:    &AgentService{cfg: cfg, store: st, cache: ca, audit: au, log: log},
+		Fleet:    &FleetService{rd: rustdesk.New(cfg.RustDeskAPIURL, cfg.RustDeskAPIToken), log: log},
 	}
 }

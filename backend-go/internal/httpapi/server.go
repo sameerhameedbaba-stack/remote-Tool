@@ -93,6 +93,7 @@ func (s *Server) Router() http.Handler {
 			r.Get("/sessions/{id}", s.handleGetSession)
 			r.Post("/sessions/{id}/end", s.handleEndSession)
 			r.Post("/attended/codes", s.handleCreateCode)
+			r.Get("/fleet", s.handleListFleet)
 			r.Get("/audit", s.handleAudit)
 		})
 

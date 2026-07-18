@@ -43,6 +43,15 @@ type Config struct {
 	SeedTechEmail    string
 	SeedTechPassword string
 
+	// RustDesk Server Pro integration. The engine that powers screen/mouse/
+	// keyboard is RustDesk; this platform wraps it (branding, 9-digit codes,
+	// per-tenant fleet view). All values come from the environment — the API
+	// token and server key are secrets and must never be committed.
+	RustDeskAPIURL   string // e.g. http://200.97.171.196:21114
+	RustDeskAPIToken string // Pro console API token (Bearer)
+	RustDeskServerID string // ID/relay server host the clients point at
+	RustDeskPubKey   string // server public key baked into branded clients
+
 	TURNRealm    string
 	TURNUser     string
 	TURNPassword string
@@ -64,6 +73,10 @@ func Load() (*Config, error) {
 		PlatformDomain:       os.Getenv("PLATFORM_DOMAIN"),
 		SeedTechEmail:        os.Getenv("SEED_TECH_EMAIL"),
 		SeedTechPassword:     os.Getenv("SEED_TECH_PASSWORD"),
+		RustDeskAPIURL:       strings.TrimRight(os.Getenv("RUSTDESK_API_URL"), "/"),
+		RustDeskAPIToken:     os.Getenv("RUSTDESK_API_TOKEN"),
+		RustDeskServerID:     os.Getenv("RUSTDESK_SERVER_ID"),
+		RustDeskPubKey:       os.Getenv("RUSTDESK_PUBLIC_KEY"),
 		TURNRealm:            os.Getenv("TURN_REALM"),
 		TURNUser:             os.Getenv("TURN_USER"),
 		TURNPassword:         os.Getenv("TURN_PASSWORD"),
@@ -129,6 +142,13 @@ func (c *Config) validate() error {
 // SeedEnabled reports whether a seed technician should be created on first boot.
 func (c *Config) SeedEnabled() bool {
 	return c.SeedTechEmail != "" && c.SeedTechPassword != ""
+}
+
+// RustDeskEnabled reports whether the RustDesk Pro integration is configured.
+// When false, fleet endpoints degrade gracefully (empty list) instead of erroring
+// so the platform still boots without the token wired in.
+func (c *Config) RustDeskEnabled() bool {
+	return c.RustDeskAPIURL != "" && c.RustDeskAPIToken != ""
 }
 
 func parseICEServers(raw, turnUser, turnPassword string) ([]model.ICEServer, error) {
