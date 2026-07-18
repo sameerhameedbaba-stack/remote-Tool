@@ -95,6 +95,13 @@ services:
       # Apex domain for the multi-tenant platform: tenant subdomains are
       # <username>.PLATFORM_DOMAIN; gates on-demand TLS issuance.
       PLATFORM_DOMAIN: ${DOMAIN}
+      # RustDesk Server Pro engine. Token + server key are SECRETS: keep them in
+      # the .env file (chmod 600), never in the repo. Absent => fleet view shows
+      # a "not connected" hint and the platform still boots.
+      RUSTDESK_API_URL: ${RUSTDESK_API_URL:-}
+      RUSTDESK_API_TOKEN: ${RUSTDESK_API_TOKEN:-}
+      RUSTDESK_SERVER_ID: ${RUSTDESK_SERVER_ID:-}
+      RUSTDESK_PUBLIC_KEY: ${RUSTDESK_PUBLIC_KEY:-}
       SEED_TECH_EMAIL: ${SEED_TECH_EMAIL:-}
       SEED_TECH_PASSWORD: ${SEED_TECH_PASSWORD:-}
       # ICE handed to both peers: your public STUN + TURN (coturn below).

@@ -325,6 +325,33 @@ export function getDevice(token: string, id: string): Promise<Device> {
   });
 }
 
+// --- Fleet (RustDesk-managed machines) ---
+
+// A machine that ran the branded client and is registered against the RustDesk
+// Pro server, scoped to the technician's tenant group.
+export interface FleetMember {
+  rustdesk_id: string;
+  hostname: string;
+  username: string;
+  os: DeviceOS;
+  online: boolean;
+  last_seen?: string;
+}
+
+export interface FleetResponse {
+  members: FleetMember[];
+  // false when the RustDesk API token isn't wired in yet: the panel shows a
+  // "connect your RustDesk server" hint instead of an empty list.
+  enabled: boolean;
+}
+
+export function listFleet(
+  token: string,
+  signal?: AbortSignal,
+): Promise<FleetResponse> {
+  return request<FleetResponse>("/api/v1/fleet", { token, signal });
+}
+
 // --- Sessions ---
 
 export function createSession(

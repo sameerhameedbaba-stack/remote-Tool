@@ -13,16 +13,20 @@ import {
   Plug,
   ArrowRight,
   Search,
+  Server,
+  ExternalLink,
 } from "lucide-react";
 import { RequireAuth, useAuth } from "@/lib/auth";
 import {
   createAttendedCode,
   listDevices,
+  listFleet,
   listSessions,
   errorMessage,
   isNetworkError,
   type AttendedCodeResponse,
   type Device,
+  type FleetMember,
   type Session,
 } from "@/lib/api";
 import { startDeviceSession, PRESENCE_POLL_MS } from "@/lib/session-connect";
@@ -126,12 +130,100 @@ function AttendedCodeCard({
   );
 }
 
+// FleetCard shows the RustDesk-managed machines (the ones that ran the branded
+// client and stay online for unattended access) with live presence. Connect
+// opens the RustDesk client via its documented rustdesk:// URI on the
+// technician's own machine.
+function FleetCard({
+  members,
+  enabled,
+  loading,
+}: {
+  members: FleetMember[];
+  enabled: boolean;
+  loading: boolean;
+}) {
+  const online = members.filter((m) => m.online).length;
+  return (
+    <Card className="mt-6 p-0">
+      <div className="flex items-center justify-between px-5 pt-5">
+        <SectionHeading
+          title="Unattended machines"
+          description="Computers running your branded client — online status, connect anytime."
+        />
+        {enabled && members.length > 0 && (
+          <span className="text-[12px] text-fg-muted">
+            {online} online · {members.length} total
+          </span>
+        )}
+      </div>
+      <div className="mt-3">
+        {loading ? (
+          <LoadingState rows={3} />
+        ) : !enabled ? (
+          <EmptyState
+            icon={<Server className="h-5 w-5" aria-hidden />}
+            title="Fleet not connected yet"
+            description="Once your RustDesk server API token is configured, the machines that install your branded client appear here with live on/off status."
+          />
+        ) : members.length === 0 ? (
+          <EmptyState
+            icon={<Server className="h-5 w-5" aria-hidden />}
+            title="No machines yet"
+            description="Send a user your branded installer. After they run it once, the machine stays here for unattended access."
+          />
+        ) : (
+          <ul className="divide-y divide-line">
+            {members.map((m) => (
+              <li
+                key={m.rustdesk_id}
+                className="flex items-center gap-3 px-5 py-3 transition-colors hover:bg-surface-hover"
+              >
+                <OsIcon os={m.os} className="h-4 w-4 text-fg-muted" />
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-sm font-medium text-fg">
+                    {m.hostname || m.rustdesk_id}
+                  </div>
+                  <div className="truncate text-[12px] text-fg-muted">
+                    ID {m.rustdesk_id}
+                    {m.username ? ` · ${m.username}` : ""}
+                    {m.last_seen ? ` · seen ${m.last_seen}` : ""}
+                  </div>
+                </div>
+                <PresenceBadge
+                  status={m.online ? "online" : "offline"}
+                  size="sm"
+                />
+                <a
+                  href={`rustdesk://connection/new/${encodeURIComponent(m.rustdesk_id)}`}
+                  className={cn(
+                    "inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-[13px] font-medium transition-colors",
+                    m.online
+                      ? "bg-accent text-white hover:bg-accent/90"
+                      : "pointer-events-none bg-surface-hover text-fg-muted opacity-60",
+                  )}
+                  aria-disabled={!m.online}
+                >
+                  <ExternalLink className="h-3.5 w-3.5" aria-hidden />
+                  Connect
+                </a>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </Card>
+  );
+}
+
 function DashboardContent() {
   const { token } = useAuth();
   const router = useRouter();
   const search = useSearchParams();
   const [devices, setDevices] = useState<Device[]>([]);
   const [sessions, setSessions] = useState<Session[]>([]);
+  const [fleet, setFleet] = useState<FleetMember[]>([]);
+  const [fleetEnabled, setFleetEnabled] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -147,12 +239,15 @@ function DashboardContent() {
     async (signal?: AbortSignal) => {
       if (!token) return;
       try {
-        const [devRes, sesRes] = await Promise.all([
+        const [devRes, sesRes, fleetRes] = await Promise.all([
           listDevices(token, {}, signal),
           listSessions(token, { limit: 8 }, signal),
+          listFleet(token, signal),
         ]);
         setDevices(devRes.devices);
         setSessions(sesRes.sessions);
+        setFleet(fleetRes.members);
+        setFleetEnabled(fleetRes.enabled);
         setError(null);
       } catch (err) {
         if (isNetworkError(err)) return;
@@ -376,6 +471,9 @@ function DashboardContent() {
           </div>
         </Card>
       </div>
+
+      {/* Unattended fleet (RustDesk-managed) */}
+      <FleetCard members={fleet} enabled={fleetEnabled} loading={loading} />
 
       {/* Recent sessions */}
       <Card className="mt-6 p-0">
