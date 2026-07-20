@@ -138,15 +138,17 @@ services:
     depends_on:
       backend:
         condition: service_healthy
-    # Node 22 ships a global fetch; hit the landing page to report readiness.
-    # Caddy still depends on console only via service_started (above) so a
-    # healthcheck quirk can never keep the site from coming up.
+    # Node 22 ships a global fetch. Next.js standalone binds to $HOSTNAME (Docker
+    # sets it to the container id), NOT 127.0.0.1 — so probe that address. Any
+    # HTTP response means the server is up (a redirect/404 still proves liveness);
+    # only a connection error fails. Caddy depends on console via service_started
+    # (above), so a healthcheck quirk can never keep the site from coming up.
     healthcheck:
       test:
         - "CMD"
         - "node"
         - "-e"
-        - "fetch('http://127.0.0.1:3000/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+        - "fetch('http://'+(process.env.HOSTNAME||'127.0.0.1')+':3000/').then(()=>process.exit(0)).catch(()=>process.exit(1))"
       interval: 15s
       timeout: 5s
       retries: 5
