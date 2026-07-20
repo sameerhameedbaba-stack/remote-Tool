@@ -1,17 +1,14 @@
 "use client";
 
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
-import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import {
   MonitorSmartphone,
-  Radio,
   WifiOff,
   KeyRound,
   Copy,
   Check,
   Plug,
-  ArrowRight,
   Search,
   Server,
   ExternalLink,
@@ -20,18 +17,14 @@ import {
 import { RequireAuth, useAuth } from "@/lib/auth";
 import {
   createAttendedCode,
-  listDevices,
   listFleet,
-  listSessions,
   technicianAppUrl,
   errorMessage,
   isNetworkError,
   type AttendedCodeResponse,
-  type Device,
   type FleetMember,
-  type Session,
 } from "@/lib/api";
-import { startDeviceSession, PRESENCE_POLL_MS } from "@/lib/session-connect";
+import { PRESENCE_POLL_MS } from "@/lib/session-connect";
 import {
   Button,
   Card,
@@ -42,12 +35,10 @@ import {
   EmptyState,
   LoadingState,
   PresenceBadge,
-  SessionBadge,
   useCountdown,
   timeAgo,
-  formatTime,
 } from "@/components/ui";
-import { OsIcon, osLabel } from "@/components/domain/os";
+import { OsIcon } from "@/components/domain/os";
 import { apexDomain } from "@/lib/tenant";
 import { cn } from "@/lib/cn";
 
@@ -237,10 +228,7 @@ function FleetCard({
 
 function DashboardContent() {
   const { token } = useAuth();
-  const router = useRouter();
   const search = useSearchParams();
-  const [devices, setDevices] = useState<Device[]>([]);
-  const [sessions, setSessions] = useState<Session[]>([]);
   const [fleet, setFleet] = useState<FleetMember[]>([]);
   const [fleetEnabled, setFleetEnabled] = useState(false);
   const [fleetUnavailable, setFleetUnavailable] = useState(false);
@@ -252,42 +240,24 @@ function DashboardContent() {
   );
   const [creatingCode, setCreatingCode] = useState(false);
   const [label, setLabel] = useState("");
-  const [connectingId, setConnectingId] = useState<string | null>(null);
   const labelRef = useRef<HTMLInputElement>(null);
 
+  // The dashboard is now entirely RustDesk-fleet driven.
   const load = useCallback(
     async (signal?: AbortSignal) => {
       if (!token) return;
-      // Core data (devices + sessions) governs the page. Its failure surfaces
-      // the error banner.
-      try {
-        const [devRes, sesRes] = await Promise.all([
-          listDevices(token, {}, signal),
-          listSessions(token, { limit: 8 }, signal),
-        ]);
-        setDevices(devRes.devices);
-        setSessions(sesRes.sessions);
-        setError(null);
-      } catch (err) {
-        if (!isNetworkError(err)) {
-          setError(errorMessage(err, "Failed to load data"));
-        }
-      } finally {
-        setLoading(false);
-      }
-
-      // Fleet (RustDesk) is a SECONDARY integration: fetch it separately so a
-      // RustDesk outage degrades only this panel and never blanks the core
-      // dashboard or raises the page-level error banner.
       try {
         const fleetRes = await listFleet(token, signal);
         setFleet(fleetRes.members);
         setFleetEnabled(fleetRes.enabled);
         setFleetUnavailable(fleetRes.unavailable === true);
+        setError(null);
       } catch (err) {
         if (!isNetworkError(err)) {
           setFleetUnavailable(true);
         }
+      } finally {
+        setLoading(false);
       }
     },
     [token],
@@ -333,20 +303,7 @@ function DashboardContent() {
     }
   };
 
-  const connect = async (device: Device) => {
-    if (!token) return;
-    setConnectingId(device.id);
-    try {
-      const session = await startDeviceSession(token, device.id);
-      router.push(`/sessions/${session.id}`);
-    } catch (err) {
-      setError(errorMessage(err, "Failed to start session"));
-      setConnectingId(null);
-    }
-  };
-
-  const onlineDevices = devices.filter((d) => d.status === "online");
-  const activeSessions = sessions.filter((s) => s.status === "active");
+  const onlineFleet = fleet.filter((m) => m.online);
   const openCommand = () =>
     window.dispatchEvent(new Event("rs:open-command"));
 
@@ -381,34 +338,26 @@ function DashboardContent() {
         </div>
       </div>
 
-      {/* Metrics */}
-      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+      {/* Metrics — all from the live RustDesk fleet */}
+      <div className="grid grid-cols-3 gap-4">
         <MetricCard
-          label="Devices online"
-          value={loading ? "—" : onlineDevices.length}
+          label="Machines online"
+          value={loading ? "—" : onlineFleet.length}
           tone="success"
           icon={<MonitorSmartphone className="h-5 w-5" aria-hidden />}
-          hint={`${devices.length} registered`}
-        />
-        <MetricCard
-          label="Active sessions"
-          value={loading ? "—" : activeSessions.length}
-          tone={activeSessions.length > 0 ? "accent" : "neutral"}
-          icon={<Radio className="h-5 w-5" aria-hidden />}
-          hint="live now"
+          hint={`${fleet.length} total`}
         />
         <MetricCard
           label="Offline"
-          value={loading ? "—" : devices.length - onlineDevices.length}
+          value={loading ? "—" : fleet.length - onlineFleet.length}
           tone="neutral"
           icon={<WifiOff className="h-5 w-5" aria-hidden />}
         />
         <MetricCard
-          label="Recent sessions"
-          value={loading ? "—" : sessions.length}
+          label="Total machines"
+          value={loading ? "—" : fleet.length}
           tone="info"
           icon={<Plug className="h-5 w-5" aria-hidden />}
-          hint="last 8"
         />
       </div>
 
@@ -421,158 +370,53 @@ function DashboardContent() {
         </div>
       )}
 
-      <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-3">
-        {/* Attended session start */}
-        <Card className="lg:col-span-1 p-5">
-          <SectionHeading
-            title="Start attended session"
-            description="Generate a one-time code for a user running the portable agent."
-          />
-          <div className="mt-4">
-            <Field label="Session label" htmlFor="attended-label">
-              <div className="flex gap-2">
-                <Input
-                  id="attended-label"
-                  ref={labelRef}
-                  aria-label="Session label"
-                  placeholder="e.g. Jane's laptop"
-                  value={label}
-                  onChange={(e) => setLabel(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && onCreateCode()}
-                />
-                <Button
-                  variant="primary"
-                  onClick={onCreateCode}
-                  loading={creatingCode}
-                  icon={
-                    !creatingCode && <KeyRound className="h-4 w-4" aria-hidden />
-                  }
-                  className="whitespace-nowrap"
-                >
-                  Create code
-                </Button>
-              </div>
-            </Field>
-          </div>
-          {attendedCode && (
-            <AttendedCodeCard
-              code={attendedCode}
-              onClear={() => setAttendedCode(null)}
-            />
-          )}
-        </Card>
-
-        {/* Online devices quick connect */}
-        <Card className="lg:col-span-2 p-0">
-          <div className="flex items-center justify-between px-5 pt-5">
-            <SectionHeading
-              title="Online devices"
-              description="One-click unattended connect."
-            />
-            <Link
-              href="/devices"
-              className="flex items-center gap-1 text-[13px] font-medium text-accent hover:underline"
-            >
-              All devices <ArrowRight className="h-3.5 w-3.5" aria-hidden />
-            </Link>
-          </div>
-          <div className="mt-3">
-            {loading ? (
-              <LoadingState rows={3} />
-            ) : onlineDevices.length === 0 ? (
-              <EmptyState
-                icon={<WifiOff className="h-5 w-5" aria-hidden />}
-                title="No devices online"
-                description="Devices appear here when their agent is connected."
+      {/* Create a support code — customer enters it at your download page */}
+      <Card className="mt-6 p-5">
+        <SectionHeading
+          title="Start a support session"
+          description="Generate a one-time code. The customer enters it at your download page (tiefixy.com) to get your branded app."
+        />
+        <div className="mt-4 max-w-xl">
+          <Field label="Label (optional)" htmlFor="attended-label">
+            <div className="flex gap-2">
+              <Input
+                id="attended-label"
+                ref={labelRef}
+                aria-label="Session label"
+                placeholder="e.g. Jane's laptop"
+                value={label}
+                onChange={(e) => setLabel(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && onCreateCode()}
               />
-            ) : (
-              <ul className="divide-y divide-line">
-                {onlineDevices.slice(0, 5).map((d) => (
-                  <li
-                    key={d.id}
-                    className="flex items-center gap-3 px-5 py-3 transition-colors hover:bg-surface-hover"
-                  >
-                    <OsIcon os={d.os} className="h-4 w-4 text-fg-muted" />
-                    <div className="min-w-0 flex-1">
-                      <div className="truncate text-sm font-medium text-fg">
-                        {d.name}
-                      </div>
-                      <div className="truncate text-[12px] text-fg-muted">
-                        {d.hostname} · {osLabel(d.os)} · seen {timeAgo(d.last_seen_at)}
-                      </div>
-                    </div>
-                    <PresenceBadge status={d.status} size="sm" />
-                    <Button
-                      size="sm"
-                      variant="primary"
-                      loading={connectingId === d.id}
-                      onClick={() => void connect(d)}
-                      icon={
-                        connectingId !== d.id && (
-                          <Plug className="h-3.5 w-3.5" aria-hidden />
-                        )
-                      }
-                    >
-                      Connect
-                    </Button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-        </Card>
-      </div>
+              <Button
+                variant="primary"
+                onClick={onCreateCode}
+                loading={creatingCode}
+                icon={
+                  !creatingCode && <KeyRound className="h-4 w-4" aria-hidden />
+                }
+                className="whitespace-nowrap"
+              >
+                Create code
+              </Button>
+            </div>
+          </Field>
+        </div>
+        {attendedCode && (
+          <AttendedCodeCard
+            code={attendedCode}
+            onClear={() => setAttendedCode(null)}
+          />
+        )}
+      </Card>
 
-      {/* Unattended fleet (RustDesk-managed) */}
+      {/* Unattended fleet (RustDesk-managed) — the main machine list */}
       <FleetCard
         members={fleet}
         enabled={fleetEnabled}
         unavailable={fleetUnavailable}
         loading={loading}
       />
-
-      {/* Recent sessions */}
-      <Card className="mt-6 p-0">
-        <div className="px-5 pt-5">
-          <SectionHeading
-            title="Recent sessions"
-            description="Latest support activity across your organization."
-          />
-        </div>
-        <div className="mt-3">
-          {loading ? (
-            <LoadingState rows={3} />
-          ) : sessions.length === 0 ? (
-            <EmptyState
-              icon={<Radio className="h-5 w-5" aria-hidden />}
-              title="No sessions yet"
-              description="Start a session from a device or an attended code to see it here."
-            />
-          ) : (
-            <ul className="divide-y divide-line">
-              {sessions.map((s) => (
-                <li
-                  key={s.id}
-                  className="flex items-center gap-3 px-5 py-3 transition-colors hover:bg-surface-hover"
-                >
-                  <div className="min-w-0 flex-1">
-                    <Link
-                      href={`/sessions/${s.id}`}
-                      className="font-mono text-[13px] font-medium text-accent hover:underline"
-                    >
-                      {s.id.slice(0, 8)}
-                    </Link>
-                    <div className="text-[12px] text-fg-muted">
-                      {s.type} · {formatTime(s.created_at)}
-                    </div>
-                  </div>
-                  <SessionBadge status={s.status} />
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-      </Card>
     </div>
   );
 }
