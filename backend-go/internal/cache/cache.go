@@ -114,3 +114,17 @@ func (c *Cache) RedeemSessionCode(ctx context.Context, codeHash string) (string,
 	}
 	return sessionID, nil
 }
+
+// PeekSessionCode reads the code mapping WITHOUT consuming it (plain GET), so
+// the same code can drive the branded-client download flow repeatedly within
+// its TTL. Returns ErrCodeNotFound if absent or expired.
+func (c *Cache) PeekSessionCode(ctx context.Context, codeHash string) (string, error) {
+	sessionID, err := c.rdb.Get(ctx, codeKey(codeHash)).Result()
+	if errors.Is(err, redis.Nil) {
+		return "", ErrCodeNotFound
+	}
+	if err != nil {
+		return "", err
+	}
+	return sessionID, nil
+}

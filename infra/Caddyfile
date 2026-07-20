@@ -34,8 +34,22 @@
 	}
 }
 
-# Fixed hostnames — normal HTTP-01 certificates.
-{$DOMAIN}, www.{$DOMAIN}, admin.{$DOMAIN} {
+# Apex + www: the platform console, PLUS the customer code-entry page at /join
+# so end users go to tiefixy.com/join (not a separate subdomain) to get the
+# branded client. The download itself is /api/v1/connect/download (validates the
+# code, serves the right technician's client) and is handled by app_routes.
+{$DOMAIN}, www.{$DOMAIN} {
+	@join path /join /join/
+	handle @join {
+		root * /srv/connect
+		rewrite * /index.html
+		file_server
+	}
+	import app_routes
+}
+
+# Admin panel — console only.
+admin.{$DOMAIN} {
 	import app_routes
 }
 
@@ -47,20 +61,15 @@
 connect.{$DOMAIN} {
 	encode gzip
 
+	# API (incl. the validated /api/v1/connect/download) goes to the backend.
 	@backend path /api/* /ws/* /healthz /readyz
 	handle @backend {
 		reverse_proxy backend:8080
 	}
 
-	@dl path /dl
-	handle @dl {
-		root * /srv/agent
-		header Content-Disposition `attachment; filename="RemoteSupport--{host}--{query.code}.exe"`
-		header Content-Type application/octet-stream
-		rewrite * /remote-agent.exe
-		file_server
-	}
-
+	# The code-entry page. The download is now the code-validated backend
+	# endpoint (see the page's script), not a raw static file, so there is no
+	# unauthenticated /dl route any more.
 	handle {
 		root * /srv/connect
 		file_server

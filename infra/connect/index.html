@@ -187,17 +187,39 @@
           err.textContent = "";
         });
 
-        function download(code) {
-          var host = location.host;
-          fname.textContent = "RemoteSupport--" + host + "--" + code + ".exe";
-          // Trigger the download without navigating away from this page.
+        function startDownload(code) {
+          fname.textContent = "Tiefixy-Support.exe";
+          // Trigger the download without navigating away from this page. The
+          // backend validates the code again and serves the right branded
+          // client for the technician who issued it.
           var a = document.createElement("a");
-          a.href = "/dl?code=" + encodeURIComponent(code);
+          a.href = "/api/v1/connect/download?code=" + encodeURIComponent(code);
           a.rel = "noopener";
           document.body.appendChild(a);
           a.click();
           document.body.removeChild(a);
           steps.classList.add("show");
+        }
+
+        // Validate the code against the server BEFORE downloading, so a wrong or
+        // expired code shows a clear message instead of a broken file.
+        function submitCode(code) {
+          go.disabled = true;
+          err.textContent = "";
+          fetch("/api/v1/connect/resolve?code=" + encodeURIComponent(code))
+            .then(function (r) {
+              if (r.ok) {
+                startDownload(code);
+              } else {
+                err.textContent = "That code is invalid or has expired. Ask for a new one.";
+              }
+            })
+            .catch(function () {
+              err.textContent = "Network error — please check your connection and try again.";
+            })
+            .finally(function () {
+              go.disabled = input.value.length !== CODE_LEN;
+            });
         }
 
         form.addEventListener("submit", function (e) {
@@ -207,13 +229,13 @@
             err.textContent = "Please enter all 9 digits.";
             return;
           }
-          download(code);
+          submitCode(code);
         });
 
         retry.addEventListener("click", function (e) {
           e.preventDefault();
           var code = clean(input.value);
-          if (code.length === CODE_LEN) download(code);
+          if (code.length === CODE_LEN) startDownload(code);
         });
       })();
     </script>

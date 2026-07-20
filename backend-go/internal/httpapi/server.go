@@ -82,6 +82,8 @@ func (s *Server) Router() http.Handler {
 		r.Post("/agent/enroll", s.handleEnroll)
 		r.Post("/attended/join", s.handleAttendedJoin)
 		r.Get("/connect/info", s.handleConnectInfo)
+		r.Get("/connect/resolve", s.handleConnectResolve)
+		r.Get("/connect/download", s.handleConnectDownload)
 
 		// Technician (JWT).
 		r.Group(func(r chi.Router) {

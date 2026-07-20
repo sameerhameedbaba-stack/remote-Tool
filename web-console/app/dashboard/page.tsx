@@ -46,6 +46,7 @@ import {
   formatTime,
 } from "@/components/ui";
 import { OsIcon, osLabel } from "@/components/domain/os";
+import { apexDomain } from "@/lib/tenant";
 import { cn } from "@/lib/cn";
 
 function AttendedCodeCard({
@@ -66,16 +67,15 @@ function AttendedCodeCard({
       /* ignore */
     }
   };
-  // The end user opens the connect page (connect.<this-host>) and enters the
-  // code; the page hands them a ready-to-run agent. Derived from the current
-  // origin so it stays correct across deployments.
-  const connectHost =
-    typeof window !== "undefined" ? `connect.${window.location.host}` : "";
+  // The end user opens the customer page on the apex domain (tiefixy.com/join)
+  // and enters the code; the page validates it and hands them the branded
+  // client. Derived from the current host so it stays correct across tenants.
+  const joinUrl = apexDomain() ? `${apexDomain()}/join` : "";
   return (
     <div className="mt-4 rounded-xl border border-accent/30 bg-accent-soft/40 p-4">
       <div className="flex items-center justify-between">
         <span className="text-[12px] font-medium text-fg-secondary">
-          Send the user to the connect page
+          Send the customer to your download page
         </span>
         <button
           onClick={onClear}
@@ -84,11 +84,11 @@ function AttendedCodeCard({
           Dismiss
         </button>
       </div>
-      {connectHost && (
+      {joinUrl && (
         <p className="mt-1 text-[12px] text-fg-muted">
           Tell them to open{" "}
-          <span className="font-medium text-fg">{connectHost}</span> and enter
-          this code — a ready-to-run app downloads, no install needed.
+          <span className="font-medium text-fg">{joinUrl}</span> and enter this
+          code — your branded app downloads, no install fuss.
         </p>
       )}
       <div className="mt-3 flex items-center justify-between gap-4">

@@ -102,6 +102,9 @@ services:
       RUSTDESK_API_TOKEN: ${RUSTDESK_API_TOKEN:-}
       RUSTDESK_SERVER_ID: ${RUSTDESK_SERVER_ID:-}
       RUSTDESK_PUBLIC_KEY: ${RUSTDESK_PUBLIC_KEY:-}
+      # Branded client installers the backend serves per code (<username>.exe,
+      # or remote-agent.exe fallback). Same dir Caddy mounts for /dl.
+      CONNECT_CLIENT_DIR: /srv/agent
       SEED_TECH_EMAIL: ${SEED_TECH_EMAIL:-}
       SEED_TECH_PASSWORD: ${SEED_TECH_PASSWORD:-}
       # ICE handed to both peers: your public STUN + TURN (coturn below).
@@ -109,6 +112,10 @@ services:
       TURN_REALM: ${TURN_REALM:-${DOMAIN}}
       TURN_USER: ${TURN_USER:?set TURN_USER}
       TURN_PASSWORD: ${TURN_PASSWORD:?set TURN_PASSWORD}
+    volumes:
+      # Read-only access to the branded installers so /api/v1/connect/download
+      # can serve the right per-technician client for a validated code.
+      - ./agent-dist:/srv/agent:ro
     healthcheck:
       test: ["CMD", "/server", "-healthcheck"]
       interval: 10s

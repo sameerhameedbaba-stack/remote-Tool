@@ -27,6 +27,17 @@ export function platformDomain(): string {
   return window.location.host.replace(/^admin\./, "").replace(/^www\./, "");
 }
 
+// The apex domain (last two labels), stripping ANY leading subdomain — e.g.
+// alice.tiefixy.com -> tiefixy.com. Used to build the customer /join URL, which
+// always lives on the apex regardless of which tenant panel you're on.
+export function apexDomain(): string {
+  if (typeof window === "undefined") return "";
+  const host = window.location.host.split(":")[0];
+  const parts = host.split(".");
+  if (parts.length <= 2) return host;
+  return parts.slice(-2).join(".");
+}
+
 export function tenantKind(): TenantKind {
   const label = subdomainLabel();
   if (label === null || label === "www") return "apex";

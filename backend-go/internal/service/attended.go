@@ -76,6 +76,50 @@ func (s *AttendedService) CreateCode(ctx context.Context, techID, label, ip stri
 	}, nil
 }
 
+// CodeTarget identifies who a support code belongs to, for the branded-client
+// download flow. Username selects that technician's branded installer; it is
+// empty for a code whose technician has no username (falls back to the generic
+// client).
+type CodeTarget struct {
+	TechnicianID string
+	Username     string
+}
+
+// ResolveCode validates a support code WITHOUT consuming it and returns the
+// technician it belongs to, so the connect page can (a) reject bad codes and
+// (b) hand out that technician's branded client. Returns ErrNotFound for an
+// unknown/expired code and ErrInvalid for a malformed one.
+func (s *AttendedService) ResolveCode(ctx context.Context, code string) (*CodeTarget, error) {
+	normalized := auth.NormalizeSessionCode(code)
+	if len(normalized) != s.cfg.SessionCodeLength {
+		return nil, ErrInvalid
+	}
+	sessionID, err := s.cache.PeekSessionCode(ctx, auth.HashSessionCode(s.cfg.JWTSecret, code))
+	if err != nil {
+		if errors.Is(err, cache.ErrCodeNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	sess, err := s.store.GetSession(ctx, sessionID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	target := &CodeTarget{}
+	if sess.TechnicianID != nil {
+		target.TechnicianID = *sess.TechnicianID
+		if tech, err := s.store.GetTechnicianByID(ctx, *sess.TechnicianID); err == nil {
+			target.Username = tech.Username
+		} else {
+			s.log.Warn("resolve code: technician lookup failed", "technician_id", *sess.TechnicianID, "err", err)
+		}
+	}
+	return target, nil
+}
+
 // JoinResult is returned to the portable agent on successful redemption.
 type JoinResult struct {
 	SessionID   string

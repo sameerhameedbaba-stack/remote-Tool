@@ -75,12 +75,27 @@ The reliable way with RustDesk Pro:
    that technician's group baked in (app name "Tiefixy Support", server
    `200.97.171.196`, your key, unattended password ON, **assign to group
    `alice`**).
-3. Give that installer to `alice`; every machine that runs it lands in group
-   `alice` and shows up in `alice.tiefixy.com`'s dashboard — and nowhere else.
+3. Put that installer on the server named after the username:
+   `/opt/remote-tool/infra/agent-dist/alice.exe`. The platform automatically
+   serves it to anyone who enters one of **alice's** codes.
 
-> While you're the only user (admin), you already see everything, so this only
-> becomes necessary as you add technicians. Until a machine is grouped, it shows
-> only in the admin dashboard — that's the safe default, not a bug.
+### How the code → right-client flow works (built)
+
+- A customer opens **`tiefixy.com/join`** and enters a technician's 9-digit code.
+- The page validates the code (`/api/v1/connect/resolve`) — a wrong/expired code
+  is rejected with a clear message.
+- The download (`/api/v1/connect/download`) serves that technician's installer
+  (`<username>.exe`) when present, else the generic `remote-agent.exe`.
+- The customer runs it once → the machine lands in the technician's group → it
+  appears in that technician's dashboard, and nowhere else.
+
+So to onboard a technician: create their group, generate their client, drop it at
+`agent-dist/<username>.exe`. Done.
+
+> While you're the only user (admin), you already see everything, so per-tech
+> installers only matter as you add technicians. Until a machine is grouped it
+> shows only in the admin dashboard — the safe default, not a bug. The generic
+> `remote-agent.exe` is the fallback for any code without a per-tech installer.
 
 Alternative for a few machines: assign devices to groups manually in the console
 (Devices → select → set group).

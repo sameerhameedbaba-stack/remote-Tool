@@ -52,6 +52,11 @@ type Config struct {
 	RustDeskServerID string // ID/relay server host the clients point at
 	RustDeskPubKey   string // server public key baked into branded clients
 
+	// ConnectClientDir holds the branded client installers served to hosts. A
+	// per-technician installer is <username>.exe; remote-agent.exe is the
+	// generic fallback. Same directory Caddy mounts for /dl.
+	ConnectClientDir string
+
 	TURNRealm    string
 	TURNUser     string
 	TURNPassword string
@@ -77,6 +82,7 @@ func Load() (*Config, error) {
 		RustDeskAPIToken:     os.Getenv("RUSTDESK_API_TOKEN"),
 		RustDeskServerID:     os.Getenv("RUSTDESK_SERVER_ID"),
 		RustDeskPubKey:       os.Getenv("RUSTDESK_PUBLIC_KEY"),
+		ConnectClientDir:     getenv("CONNECT_CLIENT_DIR", "/srv/agent"),
 		TURNRealm:            os.Getenv("TURN_REALM"),
 		TURNUser:             os.Getenv("TURN_USER"),
 		TURNPassword:         os.Getenv("TURN_PASSWORD"),
