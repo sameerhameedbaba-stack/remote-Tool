@@ -69,10 +69,10 @@ function AttendedCodeCard({
       /* ignore */
     }
   };
-  // The end user opens the customer page on the apex domain (tiefixy.com/join)
+  // The end user opens the customer page — the apex domain root (tiefixy.com) —
   // and enters the code; the page validates it and hands them the branded
   // client. Derived from the current host so it stays correct across tenants.
-  const joinUrl = apexDomain() ? `${apexDomain()}/join` : "";
+  const joinUrl = apexDomain();
   return (
     <div className="mt-4 rounded-xl border border-accent/30 bg-accent-soft/40 p-4">
       <div className="flex items-center justify-between">

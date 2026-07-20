@@ -34,18 +34,25 @@
 	}
 }
 
-# Apex + www: the platform console, PLUS the customer code-entry page at /join
-# so end users go to tiefixy.com/join (not a separate subdomain) to get the
-# branded client. The download itself is /api/v1/connect/download (validates the
-# code, serves the right technician's client) and is handled by app_routes.
+# Apex + www: the CUSTOMER code-entry page IS the root. A customer visits
+# tiefixy.com, enters the 9-digit code, and downloads the branded client
+# (validated + served by /api/v1/connect/*). The staff console does NOT live
+# here — admins use admin.<domain> and technicians use <username>.<domain>.
 {$DOMAIN}, www.{$DOMAIN} {
-	@join path /join /join/
-	handle @join {
+	encode gzip
+
+	# Connect API (validate code + branded download) and health to the backend.
+	@backend path /api/* /ws/* /healthz /readyz
+	handle @backend {
+		reverse_proxy backend:8080
+	}
+
+	# Everything else = the single-page customer code-entry page.
+	handle {
 		root * /srv/connect
 		rewrite * /index.html
 		file_server
 	}
-	import app_routes
 }
 
 # Admin panel — console only.

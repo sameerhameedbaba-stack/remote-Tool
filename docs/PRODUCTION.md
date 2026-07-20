@@ -81,7 +81,8 @@ The reliable way with RustDesk Pro:
 
 ### How the code → right-client flow works (built)
 
-- A customer opens **`tiefixy.com/join`** and enters a technician's 9-digit code.
+- A customer opens **`tiefixy.com`** (the root is the customer code page; staff
+  use `admin.<domain>` / `<username>.<domain>`) and enters a technician's code.
 - The page validates the code (`/api/v1/connect/resolve`) — a wrong/expired code
   is rejected with a clear message.
 - The download (`/api/v1/connect/download`) serves that technician's installer
