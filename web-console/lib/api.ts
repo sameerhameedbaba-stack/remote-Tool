@@ -355,6 +355,13 @@ export function listFleet(
   return request<FleetResponse>("/api/v1/fleet", { token, signal });
 }
 
+// Direct download URL for the branded desktop app a technician installs to
+// CONTROL remote PCs. It's a plain link (browser handles the download), served
+// from your own portal.
+export function technicianAppUrl(): string {
+  return `${API_BASE_URL}/api/v1/connect/technician-app`;
+}
+
 // --- Sessions ---
 
 export function createSession(

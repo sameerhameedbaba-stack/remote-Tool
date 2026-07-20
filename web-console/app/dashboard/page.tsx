@@ -15,6 +15,7 @@ import {
   Search,
   Server,
   ExternalLink,
+  Download,
 } from "lucide-react";
 import { RequireAuth, useAuth } from "@/lib/auth";
 import {
@@ -22,6 +23,7 @@ import {
   listDevices,
   listFleet,
   listSessions,
+  technicianAppUrl,
   errorMessage,
   isNetworkError,
   type AttendedCodeResponse,
@@ -360,13 +362,23 @@ function DashboardContent() {
             Your fleet at a glance — connect, monitor, and support.
           </p>
         </div>
-        <Button
-          variant="primary"
-          onClick={openCommand}
-          icon={<Search className="h-4 w-4" aria-hidden />}
-        >
-          Connect a device
-        </Button>
+        <div className="flex items-center gap-2">
+          <a
+            href={technicianAppUrl()}
+            className="inline-flex items-center gap-2 rounded-lg border border-line px-3 py-2 text-[13px] font-medium text-fg-secondary transition-colors hover:bg-surface-hover"
+            title="Install this on your own computer to control remote PCs"
+          >
+            <Download className="h-4 w-4" aria-hidden />
+            Technician app
+          </a>
+          <Button
+            variant="primary"
+            onClick={openCommand}
+            icon={<Search className="h-4 w-4" aria-hidden />}
+          >
+            Connect a device
+          </Button>
+        </div>
       </div>
 
       {/* Metrics */}

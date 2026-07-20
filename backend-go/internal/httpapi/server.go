@@ -84,6 +84,7 @@ func (s *Server) Router() http.Handler {
 		r.Get("/connect/info", s.handleConnectInfo)
 		r.Get("/connect/resolve", s.handleConnectResolve)
 		r.Get("/connect/download", s.handleConnectDownload)
+		r.Get("/connect/technician-app", s.handleTechnicianApp)
 
 		// Technician (JWT).
 		r.Group(func(r chi.Router) {

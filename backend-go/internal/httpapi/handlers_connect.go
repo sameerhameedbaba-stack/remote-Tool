@@ -68,25 +68,53 @@ func (s *Server) handleConnectDownload(w http.ResponseWriter, r *http.Request) {
 			"the client installer is not available yet — please contact your technician")
 		return
 	}
+	s.serveClientFile(w, r, path, "Tiefixy-Support.exe")
+}
 
+// handleTechnicianApp serves the branded desktop app technicians install to
+// CONTROL remote PCs. It serves console.exe (or technician.exe) when present,
+// else the generic client — the same RustDesk client also connects outward.
+// Public: the controlling app is not sensitive on its own (a connection still
+// needs a valid device ID + permanent password).
+func (s *Server) handleTechnicianApp(w http.ResponseWriter, r *http.Request) {
+	dir := s.cfg.ConnectClientDir
+	var path string
+	for _, name := range []string{"console.exe", "technician.exe", "remote-agent.exe"} {
+		if dir == "" {
+			break
+		}
+		if p := filepath.Join(dir, name); fileExists(p) {
+			path = p
+			break
+		}
+	}
+	if path == "" {
+		writeError(w, http.StatusServiceUnavailable, "client_unavailable",
+			"the technician app is not available yet")
+		return
+	}
+	s.serveClientFile(w, r, path, "Tiefixy-Console.exe")
+}
+
+// serveClientFile streams an on-disk installer as a download.
+func (s *Server) serveClientFile(w http.ResponseWriter, r *http.Request, path, downloadName string) {
 	f, err := os.Open(path)
 	if err != nil {
-		s.log.Warn("connect download open failed", "path", path, "err", err)
-		writeError(w, http.StatusServiceUnavailable, "client_unavailable", "the client installer is not available yet")
+		s.log.Warn("client download open failed", "path", path, "err", err)
+		writeError(w, http.StatusServiceUnavailable, "client_unavailable", "the installer is not available yet")
 		return
 	}
 	defer f.Close()
 	info, err := f.Stat()
 	if err != nil || info.IsDir() {
-		writeError(w, http.StatusServiceUnavailable, "client_unavailable", "the client installer is not available yet")
+		writeError(w, http.StatusServiceUnavailable, "client_unavailable", "the installer is not available yet")
 		return
 	}
-
 	w.Header().Set("Content-Type", "application/octet-stream")
-	w.Header().Set("Content-Disposition", `attachment; filename="Tiefixy-Support.exe"`)
+	w.Header().Set("Content-Disposition", `attachment; filename="`+downloadName+`"`)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	// http.ServeContent adds Content-Length + range support and streams the file.
-	http.ServeContent(w, r, "Tiefixy-Support.exe", info.ModTime(), f)
+	http.ServeContent(w, r, downloadName, info.ModTime(), f)
 }
 
 // resolveClientFile returns the installer path for a technician username,

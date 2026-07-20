@@ -102,6 +102,24 @@ Alternative for a few machines: assign devices to groups manually in the console
 
 ---
 
+## 3b. The technician app (how a technician takes control)  **[console]**
+
+A technician controls a remote PC with a **desktop app** they install on **their
+own** computer. With RustDesk the same client both hosts and controls, so:
+
+1. Generate a branded client named e.g. **"Tiefixy Console"** in the RustDesk
+   client generator (server `200.97.171.196`, your key). No unattended password
+   needed — this one is for *connecting out*.
+2. Put it on the server as **`/opt/remote-tool/infra/agent-dist/console.exe`**.
+3. Technicians download it from the dashboard **"Technician app"** button
+   (served from your portal at `/api/v1/connect/technician-app`). If `console.exe`
+   is absent, that button falls back to the generic client, which also connects.
+
+To control a PC: open the technician app → type the machine's ID (shown in the
+dashboard) → Connect → enter its permanent password → full screen + input.
+
+---
+
 ## 4. Backups  **[server]**
 
 A backup script is included (`infra/backup.sh`): nightly gzipped `pg_dump` with
