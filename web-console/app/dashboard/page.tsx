@@ -13,11 +13,15 @@ import {
   Server,
   ExternalLink,
   Download,
+  Pencil,
+  Trash2,
 } from "lucide-react";
 import { RequireAuth, useAuth } from "@/lib/auth";
 import {
   createAttendedCode,
   listFleet,
+  renameFleetMember,
+  deleteFleetMember,
   technicianAppUrl,
   errorMessage,
   isNetworkError,
@@ -132,11 +136,15 @@ function FleetCard({
   enabled,
   unavailable,
   loading,
+  onRename,
+  onDelete,
 }: {
   members: FleetMember[];
   enabled: boolean;
   unavailable: boolean;
   loading: boolean;
+  onRename: (id: string, current: string) => void;
+  onDelete: (id: string, name: string) => void;
 }) {
   const online = members.filter((m) => m.online).length;
   return (
@@ -217,6 +225,26 @@ function FleetCard({
                     Connect
                   </span>
                 )}
+                <button
+                  type="button"
+                  onClick={() => onRename(m.rustdesk_id, m.hostname || "")}
+                  title="Rename"
+                  aria-label={`Rename ${m.hostname || m.rustdesk_id}`}
+                  className="rounded-md p-1.5 text-fg-muted transition-colors hover:bg-surface-hover hover:text-fg"
+                >
+                  <Pencil className="h-4 w-4" aria-hidden />
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    onDelete(m.rustdesk_id, m.hostname || m.rustdesk_id)
+                  }
+                  title="Remove from dashboard"
+                  aria-label={`Remove ${m.hostname || m.rustdesk_id}`}
+                  className="rounded-md p-1.5 text-fg-muted transition-colors hover:bg-danger-soft hover:text-danger"
+                >
+                  <Trash2 className="h-4 w-4" aria-hidden />
+                </button>
               </li>
             ))}
           </ul>
@@ -300,6 +328,29 @@ function DashboardContent() {
       setError(errorMessage(err, "Failed to create code"));
     } finally {
       setCreatingCode(false);
+    }
+  };
+
+  const onRenameMember = async (id: string, current: string) => {
+    if (!token) return;
+    const next = window.prompt("Rename this machine:", current);
+    if (next === null) return; // cancelled
+    try {
+      await renameFleetMember(token, id, next.trim());
+      void load();
+    } catch (err) {
+      setError(errorMessage(err, "Rename failed"));
+    }
+  };
+
+  const onDeleteMember = async (id: string, name: string) => {
+    if (!token) return;
+    if (!window.confirm(`Remove "${name}" from your dashboard?`)) return;
+    try {
+      await deleteFleetMember(token, id);
+      void load();
+    } catch (err) {
+      setError(errorMessage(err, "Delete failed"));
     }
   };
 
@@ -416,6 +467,8 @@ function DashboardContent() {
         enabled={fleetEnabled}
         unavailable={fleetUnavailable}
         loading={loading}
+        onRename={onRenameMember}
+        onDelete={onDeleteMember}
       />
     </div>
   );

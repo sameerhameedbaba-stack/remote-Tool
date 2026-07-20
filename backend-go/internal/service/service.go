@@ -34,6 +34,6 @@ func New(cfg *config.Config, st *store.Store, ca *cache.Cache, au *audit.Service
 		Session:  &SessionService{cfg: cfg, store: st, cache: ca, audit: au, hub: hub, log: log},
 		Attended: &AttendedService{cfg: cfg, store: st, cache: ca, audit: au, hub: hub, log: log},
 		Agent:    &AgentService{cfg: cfg, store: st, cache: ca, audit: au, log: log},
-		Fleet:    &FleetService{rd: rustdesk.New(cfg.RustDeskAPIURL, cfg.RustDeskAPIToken), log: log},
+		Fleet:    &FleetService{rd: rustdesk.New(cfg.RustDeskAPIURL, cfg.RustDeskAPIToken), store: st, log: log},
 	}
 }

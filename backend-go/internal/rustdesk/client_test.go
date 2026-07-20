@@ -140,6 +140,37 @@ func TestListPeers_AuthHeaderAndGroupFilter(t *testing.T) {
 	}
 }
 
+func TestDeleteDevice(t *testing.T) {
+	var gotMethod, gotPath, gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		gotAuth = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "tok")
+	if err := c.DeleteDevice(context.Background(), "384677266"); err != nil {
+		t.Fatalf("DeleteDevice: %v", err)
+	}
+	if gotMethod != http.MethodDelete {
+		t.Fatalf("method = %q want DELETE", gotMethod)
+	}
+	if gotPath != "/api/devices/384677266" {
+		t.Fatalf("path = %q", gotPath)
+	}
+	if gotAuth != "Bearer tok" {
+		t.Fatalf("auth = %q", gotAuth)
+	}
+}
+
+func TestDeleteDevice_NotConfigured(t *testing.T) {
+	if err := New("", "").DeleteDevice(context.Background(), "x"); err != ErrNotConfigured {
+		t.Fatalf("want ErrNotConfigured, got %v", err)
+	}
+}
+
 func TestListPeers_Unauthorized(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)

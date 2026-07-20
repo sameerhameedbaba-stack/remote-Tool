@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -54,6 +55,7 @@ func (c *Client) Configured() bool { return c.baseURL != "" && c.token != "" }
 // Peer is one machine known to the RustDesk server.
 type Peer struct {
 	ID       string `json:"id"`       // RustDesk 9/10-digit device ID
+	GUID     string `json:"guid"`     // internal unique id (used for delete)
 	Hostname string `json:"hostname"` // reported OS hostname
 	Username string `json:"username"` // OS user
 	OS       string `json:"os"`       // platform string
@@ -87,6 +89,7 @@ type peerWire struct {
 func (w peerWire) toPeer() Peer {
 	p := Peer{
 		ID:       firstNonEmpty(w.ID, w.GUID),
+		GUID:     w.GUID,
 		Hostname: firstNonEmpty(w.DeviceName, w.Hostname, w.Alias),
 		Username: firstNonEmpty(w.Username, w.User),
 		OS:       normalizeOS(firstNonEmpty(w.OS, w.Platform)),
@@ -226,6 +229,32 @@ func decodePeers(body []byte) ([]peerWire, int, error) {
 	default:
 		return w.Rows, w.Total, nil
 	}
+}
+
+// DeleteDevice removes a device from the RustDesk server (DELETE /api/devices/
+// {id}). Best-effort: the machine re-registers if it later reconnects, so the
+// platform also hides it locally. Returns ErrNotConfigured when the API is off.
+func (c *Client) DeleteDevice(ctx context.Context, id string) error {
+	if !c.Configured() {
+		return ErrNotConfigured
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete,
+		c.baseURL+"/api/devices/"+url.PathEscape(id), nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("rustdesk: delete %s: %w", id, err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("rustdesk: delete %s returned %d", id, resp.StatusCode)
+	}
+	return nil
 }
 
 func (c *Client) get(ctx context.Context, path string) ([]byte, error) {

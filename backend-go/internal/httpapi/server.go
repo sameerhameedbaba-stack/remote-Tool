@@ -98,6 +98,8 @@ func (s *Server) Router() http.Handler {
 			r.Post("/sessions/{id}/end", s.handleEndSession)
 			r.Post("/attended/codes", s.handleCreateCode)
 			r.Get("/fleet", s.handleListFleet)
+			r.Post("/fleet/{id}/rename", s.handleRenameFleetMember)
+			r.Delete("/fleet/{id}", s.handleDeleteFleetMember)
 			r.Get("/audit", s.handleAudit)
 		})
 

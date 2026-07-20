@@ -355,6 +355,30 @@ export function listFleet(
   return request<FleetResponse>("/api/v1/fleet", { token, signal });
 }
 
+// Rename a fleet machine (platform-side display alias). Empty alias clears it.
+export function renameFleetMember(
+  token: string,
+  rustdeskId: string,
+  alias: string,
+): Promise<void> {
+  return request<void>(
+    `/api/v1/fleet/${encodeURIComponent(rustdeskId)}/rename`,
+    { method: "POST", token, body: { alias } },
+  );
+}
+
+// Delete a fleet machine: hides it from the dashboard and best-effort removes
+// it from the RustDesk server.
+export function deleteFleetMember(
+  token: string,
+  rustdeskId: string,
+): Promise<void> {
+  return request<void>(`/api/v1/fleet/${encodeURIComponent(rustdeskId)}`, {
+    method: "DELETE",
+    token,
+  });
+}
+
 // Direct download URL for the branded desktop app a technician installs to
 // CONTROL remote PCs. It's a plain link (browser handles the download), served
 // from your own portal.
