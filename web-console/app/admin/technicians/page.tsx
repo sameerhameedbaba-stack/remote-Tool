@@ -145,6 +145,8 @@ function TechniciansContent() {
             <Field label="Username (their subdomain)" htmlFor="t-username">
               <Input
                 id="t-username"
+                name="new-technician-username"
+                autoComplete="off"
                 placeholder="jane"
                 value={username}
                 onChange={(e) => setUsername(e.target.value.toLowerCase())}
@@ -161,7 +163,9 @@ function TechniciansContent() {
             <Field label="Email" htmlFor="t-email">
               <Input
                 id="t-email"
+                name="new-technician-email"
                 type="email"
+                autoComplete="off"
                 placeholder="jane@company.com"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
@@ -170,6 +174,8 @@ function TechniciansContent() {
             <Field label="Display name" htmlFor="t-name">
               <Input
                 id="t-name"
+                name="new-technician-name"
+                autoComplete="off"
                 placeholder="Jane Doe"
                 value={displayName}
                 onChange={(e) => setDisplayName(e.target.value)}
@@ -178,7 +184,9 @@ function TechniciansContent() {
             <Field label="Temporary password (min 8 chars)" htmlFor="t-pass">
               <Input
                 id="t-pass"
+                name="new-technician-password"
                 type="password"
+                autoComplete="new-password"
                 placeholder="••••••••"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
