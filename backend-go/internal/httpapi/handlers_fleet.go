@@ -65,6 +65,30 @@ type renameFleetRequest struct {
 	Alias string `json:"alias"`
 }
 
+type assignFleetRequest struct {
+	Owner string `json:"owner"` // technician username, or "" to unassign
+}
+
+// handleAssignFleetMember assigns a machine to a technician. Admin-only: only
+// the platform admin decides which technician owns a machine.
+func (s *Server) handleAssignFleetMember(w http.ResponseWriter, r *http.Request) {
+	claims := techFrom(r.Context())
+	if claims.Role != model.RoleAdmin {
+		writeError(w, http.StatusForbidden, "forbidden", "only the admin can assign machines")
+		return
+	}
+	id := chi.URLParam(r, "id")
+	var req assignFleetRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if err := s.svcs.Fleet.Assign(r.Context(), id, req.Owner); err != nil {
+		writeServiceError(w, s.log, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // scopeGroup returns the RustDesk group the caller may act within: their own
 // username, or "" for the platform admin (whole fleet).
 func scopeGroup(r *http.Request) string {

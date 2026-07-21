@@ -336,6 +336,7 @@ export interface FleetMember {
   os: DeviceOS;
   online: boolean;
   last_seen?: string;
+  owner?: string; // assigned technician username
 }
 
 export interface FleetResponse {
@@ -377,6 +378,18 @@ export function deleteFleetMember(
     method: "DELETE",
     token,
   });
+}
+
+// Assign a fleet machine to a technician (admin only). Empty owner unassigns.
+export function assignFleetMember(
+  token: string,
+  rustdeskId: string,
+  owner: string,
+): Promise<void> {
+  return request<void>(
+    `/api/v1/fleet/${encodeURIComponent(rustdeskId)}/assign`,
+    { method: "POST", token, body: { owner } },
+  );
 }
 
 // Direct download URL for the branded desktop app a technician installs to

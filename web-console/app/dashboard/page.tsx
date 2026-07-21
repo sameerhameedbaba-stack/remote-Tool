@@ -22,11 +22,14 @@ import {
   listFleet,
   renameFleetMember,
   deleteFleetMember,
+  assignFleetMember,
+  listTechnicians,
   technicianAppUrl,
   errorMessage,
   isNetworkError,
   type AttendedCodeResponse,
   type FleetMember,
+  type Technician,
 } from "@/lib/api";
 import { PRESENCE_POLL_MS } from "@/lib/session-connect";
 import {
@@ -136,15 +139,21 @@ function FleetCard({
   enabled,
   unavailable,
   loading,
+  isAdmin,
+  technicians,
   onRename,
   onDelete,
+  onAssign,
 }: {
   members: FleetMember[];
   enabled: boolean;
   unavailable: boolean;
   loading: boolean;
+  isAdmin: boolean;
+  technicians: Technician[];
   onRename: (id: string, current: string) => void;
   onDelete: (id: string, name: string) => void;
+  onAssign: (id: string, owner: string) => void;
 }) {
   const online = members.filter((m) => m.online).length;
   return (
@@ -196,11 +205,29 @@ function FleetCard({
                   <div className="truncate text-[12px] text-fg-muted">
                     ID {m.rustdesk_id}
                     {m.username ? ` · ${m.username}` : ""}
+                    {m.owner ? ` · ${m.owner}` : ""}
                     {!m.online && m.last_seen
                       ? ` · seen ${timeAgo(m.last_seen)}`
                       : ""}
                   </div>
                 </div>
+                {isAdmin && (
+                  <select
+                    value={m.owner ?? ""}
+                    onChange={(e) => onAssign(m.rustdesk_id, e.target.value)}
+                    title="Assign this machine to a technician"
+                    className="rounded-md border border-line bg-surface px-2 py-1 text-[12px] text-fg-secondary"
+                  >
+                    <option value="">Unassigned</option>
+                    {technicians
+                      .filter((t) => t.role !== "admin")
+                      .map((t) => (
+                        <option key={t.id} value={t.username}>
+                          {t.username}
+                        </option>
+                      ))}
+                  </select>
+                )}
                 <PresenceBadge
                   status={m.online ? "online" : "offline"}
                   size="sm"
@@ -255,11 +282,13 @@ function FleetCard({
 }
 
 function DashboardContent() {
-  const { token } = useAuth();
+  const { token, technician } = useAuth();
+  const isAdmin = technician?.role === "admin";
   const search = useSearchParams();
   const [fleet, setFleet] = useState<FleetMember[]>([]);
   const [fleetEnabled, setFleetEnabled] = useState(false);
   const [fleetUnavailable, setFleetUnavailable] = useState(false);
+  const [technicians, setTechnicians] = useState<Technician[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -353,6 +382,32 @@ function DashboardContent() {
       setError(errorMessage(err, "Delete failed"));
     }
   };
+
+  const onAssignMember = async (id: string, owner: string) => {
+    if (!token) return;
+    try {
+      await assignFleetMember(token, id, owner);
+      void load();
+    } catch (err) {
+      setError(errorMessage(err, "Assign failed"));
+    }
+  };
+
+  // Admin needs the technician list to populate the "assign to" dropdown.
+  useEffect(() => {
+    if (!token || !isAdmin) return;
+    let alive = true;
+    listTechnicians(token)
+      .then((res) => {
+        if (alive) setTechnicians(res.technicians);
+      })
+      .catch(() => {
+        /* non-fatal: assignment dropdown just stays empty */
+      });
+    return () => {
+      alive = false;
+    };
+  }, [token, isAdmin]);
 
   const onlineFleet = fleet.filter((m) => m.online);
   const openCommand = () =>
@@ -467,8 +522,11 @@ function DashboardContent() {
         enabled={fleetEnabled}
         unavailable={fleetUnavailable}
         loading={loading}
+        isAdmin={isAdmin}
+        technicians={technicians}
         onRename={onRenameMember}
         onDelete={onDeleteMember}
+        onAssign={onAssignMember}
       />
     </div>
   );

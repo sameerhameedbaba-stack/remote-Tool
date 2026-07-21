@@ -67,17 +67,24 @@ from technicians** (only the platform admin sees ungrouped machines). So for a
 technician's customers to appear in *their* panel, those machines must land in
 that technician's group.
 
-The reliable way with RustDesk Pro:
+**Important:** RustDesk's own device-to-group assignment is unreliable (a known
+bug — devices baked with a group often still show up unassigned). So the
+platform does the assignment itself, and it's the reliable path:
 
-1. For each technician (say username `alice`), in the console create a **group
-   `alice`**.
-2. Generate a **branded client per technician** in the Client Generator with
-   that technician's group baked in (app name "Tiefixy Support", server
-   `200.97.171.196`, your key, unattended password ON, **assign to group
-   `alice`**).
-3. Put that installer on the server named after the username:
-   `/opt/remote-tool/infra/agent-dist/alice.exe`. The platform automatically
-   serves it to anyone who enters one of **alice's** codes.
+### Assign machines to technicians (in your dashboard)
+
+1. A customer installs the branded client → the machine appears in the **admin**
+   dashboard's "Unattended machines" list (admin sees all, including unassigned).
+2. Next to each machine there's an **"Assign to \<technician\>"** dropdown
+   (admin-only). Pick the technician who owns it.
+3. That machine now shows **only** in that technician's dashboard
+   (`<username>.tiefixy.com`) and nowhere else. The technician can rename/delete
+   it; other technicians never see it.
+
+This is enforced by the platform (a per-device owner in the database), so it
+does not depend on RustDesk's flaky grouping. Optionally you can still put a
+per-technician installer at `agent-dist/<username>.exe` for branding, but
+ownership is what actually isolates tenants.
 
 ### How the code → right-client flow works (built)
 

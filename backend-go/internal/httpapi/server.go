@@ -99,6 +99,7 @@ func (s *Server) Router() http.Handler {
 			r.Post("/attended/codes", s.handleCreateCode)
 			r.Get("/fleet", s.handleListFleet)
 			r.Post("/fleet/{id}/rename", s.handleRenameFleetMember)
+			r.Post("/fleet/{id}/assign", s.handleAssignFleetMember)
 			r.Delete("/fleet/{id}", s.handleDeleteFleetMember)
 			r.Get("/audit", s.handleAudit)
 		})
