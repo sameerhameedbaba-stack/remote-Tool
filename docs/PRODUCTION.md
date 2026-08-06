@@ -128,6 +128,67 @@ dashboard) → Connect → enter its permanent password → full screen + input.
 
 ---
 
+## 3c. Connection-engine health — diagnosing "Failed to connect via rendezvous server"  **[code]**
+
+If a technician ever sees **"Failed to connect via rendezvous server: Please
+try later"**, that message is narrower than it looks. It is emitted only *after*
+the technician's app has already connected to your server successfully. It means:
+*"I reached the server, asked it three times over ~18 seconds to introduce me to
+that machine, and got no answer."* Every other failure has different wording —
+`Key mismatch`, `Remote desktop is offline`, `ID does not exist`, `Key overuse`,
+or `Failed to connect **to** …` (note *to*, not *via*). So the key, the licence,
+the ports and the firewall are all provably **not** the cause.
+
+What it actually means: your server forwarded the request to the customer's PC
+and waited, and **the customer's PC never called back**.
+
+### What the dashboard now shows
+
+The fleet list only proves the RustDesk *web console API* (port 21114) answers —
+which says nothing about the ports a session needs. So the backend now probes
+them directly and the admin dashboard has a **"Connection engine"** card:
+
+| Port | What it does | Shown as |
+|------|--------------|----------|
+| 21115 | Works out the network type before connecting | Accepting connections / Nothing listening |
+| 21116 | **Introduces the technician to the machine** (the one in the error) | ″ |
+| 21117 | Carries the session when a direct link can't be made | ″ |
+
+Plus a 24-hour strip (one cell per 15 minutes) and a list of past problems. When
+a technician says *"it failed at 14:32"*, look at 14:32: green means the engine
+was accepting connections and the fault was elsewhere (the customer's PC or a
+network in between); red means the engine was the problem.
+
+This is deliberately **not** wired into `/healthz` or `/readyz` — a RustDesk
+blip must never mark the backend unhealthy and restart the container. Probe
+interval is `RUSTDESK_PROBE_INTERVAL` (default `30s`); history is in memory, so
+it resets if the backend restarts (the failures are also written to the backend
+log, which survives).
+
+> **"Last seen" now shows for online machines too.** The server keeps a machine
+> marked online for 30 seconds after its last check-in, but the agent only
+> checks in every 15 — so a machine can read **green while already
+> unreachable**, which is precisely what produces this error. A green row with a
+> stale "seen" is the tell.
+
+### The two most likely causes, if it happens again
+
+1. **Firewall rate-limiting on the VPS.** A `ufw limit` rule blocks a source IP
+   after ~6 new connections in 30 seconds, then forgives itself. It is TCP-only,
+   so the machine keeps showing green while the callback is dropped. Check with
+   `sudo ufw status verbose | grep -i limit`.
+2. **The customer's PC napping** — sleep, Modern Standby, or Windows powering
+   down the network card. Worth adding `powercfg /change standby-timeout-ac 0`
+   and unticking *"Allow the computer to turn off this device to save power"* on
+   the network adapter to your standard agent-deployment checklist.
+
+Note also that agents built with **"Disable TCP listen port"** must open a
+brand-new outbound connection to your server for *every* session, which is why
+anything that throttles new connections shows up as this error — and why a
+second simultaneous session is the first thing to fail.
+
+---
+
 ## 4. Backups  **[server]**
 
 A backup script is included (`infra/backup.sh`): nightly gzipped `pg_dump` with
@@ -169,6 +230,7 @@ losing the RustDesk license/key means re-licensing.
 | Tenant data isolation in the API | ✅ code (group-scoped fleet + sessions/audit) |
 | Graceful degradation if RustDesk is down | ✅ code |
 | DB backups | ✅ code (`backup.sh`) — **needs the cron installed [server]** |
+| Connection-engine port monitoring (21115/21116/21117) | ✅ code (admin dashboard card) |
 | RustDesk console password + HTTPS | ⏳ **[console/server]** |
 | Per-technician grouping | ⏳ **[console]** as you add technicians |
 | End-to-end connect test | ⏳ **[you]** |

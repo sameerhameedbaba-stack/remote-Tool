@@ -199,10 +199,7 @@ interface RequestOptions {
   signal?: AbortSignal;
 }
 
-function buildUrl(
-  path: string,
-  query?: RequestOptions["query"],
-): string {
+function buildUrl(path: string, query?: RequestOptions["query"]): string {
   const url = new URL(path, API_BASE_URL);
   if (query) {
     for (const [key, value] of Object.entries(query)) {
@@ -452,10 +449,10 @@ export function getSession(token: string, id: string): Promise<Session> {
 }
 
 export function endSession(token: string, id: string): Promise<Session> {
-  return request<Session>(
-    `/api/v1/sessions/${encodeURIComponent(id)}/end`,
-    { method: "POST", token },
-  );
+  return request<Session>(`/api/v1/sessions/${encodeURIComponent(id)}/end`, {
+    method: "POST",
+    token,
+  });
 }
 
 // --- Audit ---
@@ -535,4 +532,68 @@ export function setTechnicianActive(
     `/api/v1/admin/technicians/${encodeURIComponent(id)}/active`,
     { method: "POST", token, body: { active } },
   );
+}
+
+// --- Admin: RustDesk engine health ---
+
+// The fleet list proves the RustDesk *console API* answers. It says nothing
+// about the ports a session actually needs, so the backend dials those
+// separately and keeps a rolling history. This is what turns a technician's
+// "it failed at 14:32" into a checkable fact.
+export type ProbeState = "ok" | "refused" | "timeout" | "error";
+
+export interface ProbeResult {
+  name: string;
+  port: number;
+  role: string;
+  state: ProbeState;
+  ms: number;
+  detail?: string;
+}
+
+export interface ProbeSample {
+  at: string;
+  results: ProbeResult[];
+  ok: boolean;
+}
+
+export interface ProbeOutage {
+  from: string;
+  to: string;
+  count: number;
+  ports: string[];
+}
+
+export interface ProbeBucket {
+  at: string;
+  total: number;
+  failed: number;
+}
+
+export interface RustDeskHealth {
+  enabled: boolean;
+  host: string;
+  targets: { name: string; port: number; role: string }[];
+  interval: string;
+  latest?: ProbeSample;
+  summary: {
+    window_hours: number;
+    checks: number;
+    failures: number;
+    ok_percent: number;
+    last_failure_at?: string;
+    since?: string;
+  };
+  outages: ProbeOutage[];
+  buckets: ProbeBucket[];
+}
+
+export function getRustDeskHealth(
+  token: string,
+  signal?: AbortSignal,
+): Promise<RustDeskHealth> {
+  return request<RustDeskHealth>("/api/v1/admin/rustdesk-health", {
+    token,
+    signal,
+  });
 }

@@ -12,6 +12,7 @@ import (
 	"github.com/remote-support/backend/internal/cache"
 	"github.com/remote-support/backend/internal/config"
 	"github.com/remote-support/backend/internal/ratelimit"
+	"github.com/remote-support/backend/internal/rdhealth"
 	"github.com/remote-support/backend/internal/service"
 	"github.com/remote-support/backend/internal/signal"
 	"github.com/remote-support/backend/internal/store"
@@ -30,21 +31,26 @@ type Server struct {
 	cache *cache.Cache
 	log   *slog.Logger
 
+	// prober is the RustDesk port watcher. Optional: nil means "not watching",
+	// which the health endpoint reports rather than treating as an error.
+	prober *rdhealth.Prober
+
 	joinLimiter   *ratelimit.Limiter
 	loginLimiter  *ratelimit.Limiter
 	enrollLimiter *ratelimit.Limiter
 }
 
-// NewServer wires the transport layer.
-func NewServer(cfg *config.Config, svcs *service.Services, hub *signal.Hub, au *audit.Service, st *store.Store, ca *cache.Cache, log *slog.Logger) *Server {
+// NewServer wires the transport layer. prober may be nil.
+func NewServer(cfg *config.Config, svcs *service.Services, hub *signal.Hub, au *audit.Service, st *store.Store, ca *cache.Cache, prober *rdhealth.Prober, log *slog.Logger) *Server {
 	return &Server{
-		cfg:   cfg,
-		svcs:  svcs,
-		hub:   hub,
-		audit: au,
-		store: st,
-		cache: ca,
-		log:   log,
+		cfg:    cfg,
+		svcs:   svcs,
+		hub:    hub,
+		audit:  au,
+		store:  st,
+		cache:  ca,
+		prober: prober,
+		log:    log,
 		// 5 join attempts burst, refilling at 1/sec per source IP.
 		joinLimiter: ratelimit.New(1, 5),
 		// 10 login attempts burst, refilling at 0.5/sec per source IP: blunts
@@ -110,6 +116,7 @@ func (s *Server) Router() http.Handler {
 			r.Post("/admin/technicians", s.handleCreateTechnician)
 			r.Get("/admin/technicians", s.handleListTechnicians)
 			r.Post("/admin/technicians/{id}/active", s.handleSetTechnicianActive)
+			r.Get("/admin/rustdesk-health", s.handleRustDeskHealth)
 		})
 
 		// Agent/device (device token).

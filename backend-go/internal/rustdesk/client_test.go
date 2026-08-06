@@ -182,3 +182,38 @@ func TestListPeers_Unauthorized(t *testing.T) {
 		t.Fatal("want error on 401")
 	}
 }
+
+// RustDesk emits zone-less timestamps; reading them as anything but UTC skews
+// the console's "last seen" by the viewer's offset. See normalizeTimestamp.
+func TestNormalizeTimestamp(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"", ""},
+		{"  ", ""},
+		{"2026-08-06 14:32:11", "2026-08-06T14:32:11Z"},
+		{"2026-08-06T14:32:11", "2026-08-06T14:32:11Z"},
+		{"2026-08-06 14:32:11.123456", "2026-08-06T14:32:11Z"},
+		{"2026-08-06 14:32", "2026-08-06T14:32:00Z"},
+		{"2026-08-06", "2026-08-06T00:00:00Z"},
+		// Already zoned: preserved, normalized to UTC.
+		{"2026-08-06T14:32:11Z", "2026-08-06T14:32:11Z"},
+		{"2026-08-06T16:32:11+02:00", "2026-08-06T14:32:11Z"},
+		// Epoch seconds and milliseconds.
+		{"1786026731", "2026-08-06T14:32:11Z"},
+		{"1786026731000", "2026-08-06T14:32:11Z"},
+		// Unrecognised input survives rather than being dropped.
+		{"never", "never"},
+	}
+	for _, c := range cases {
+		if got := normalizeTimestamp(c.in); got != c.want {
+			t.Errorf("normalizeTimestamp(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// The whole peer decode must carry the normalization through.
+func TestPeerLastSeenIsZoned(t *testing.T) {
+	p := peerWire{ID: "123456789", LastOnline: "2026-08-06 14:32:11"}.toPeer()
+	if p.LastSeen != "2026-08-06T14:32:11Z" {
+		t.Fatalf("LastSeen = %q, want an explicit UTC zone", p.LastSeen)
+	}
+}

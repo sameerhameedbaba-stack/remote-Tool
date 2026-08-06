@@ -102,6 +102,11 @@ services:
       RUSTDESK_API_TOKEN: ${RUSTDESK_API_TOKEN:-}
       RUSTDESK_SERVER_ID: ${RUSTDESK_SERVER_ID:-}
       RUSTDESK_PUBLIC_KEY: ${RUSTDESK_PUBLIC_KEY:-}
+      # How often to TCP-probe the RustDesk connection ports (21115/21116/21117)
+      # and record the result. This is what makes an intermittent "Failed to
+      # connect via rendezvous server" checkable after the fact. Optional; a bad
+      # value falls back to 30s rather than failing boot.
+      RUSTDESK_PROBE_INTERVAL: ${RUSTDESK_PROBE_INTERVAL:-30s}
       # Branded client installers the backend serves per code (<username>.exe,
       # or remote-agent.exe fallback). Same dir Caddy mounts for /dl.
       CONNECT_CLIENT_DIR: /srv/agent

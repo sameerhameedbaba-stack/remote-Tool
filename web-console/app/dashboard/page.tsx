@@ -24,11 +24,13 @@ import {
   deleteFleetMember,
   assignFleetMember,
   listTechnicians,
+  getRustDeskHealth,
   technicianAppUrl,
   errorMessage,
   isNetworkError,
   type AttendedCodeResponse,
   type FleetMember,
+  type RustDeskHealth,
   type Technician,
 } from "@/lib/api";
 import { PRESENCE_POLL_MS } from "@/lib/session-connect";
@@ -46,6 +48,7 @@ import {
   timeAgo,
 } from "@/components/ui";
 import { OsIcon } from "@/components/domain/os";
+import { EngineHealthCard } from "@/components/domain/EngineHealthCard";
 import { apexDomain } from "@/lib/tenant";
 import { cn } from "@/lib/cn";
 
@@ -108,7 +111,9 @@ function AttendedCodeCard({
             >
               {expired ? "Expired" : label}
             </div>
-            <div className="text-[11px] text-fg-muted">single-use · expires</div>
+            <div className="text-[11px] text-fg-muted">
+              single-use · expires
+            </div>
           </div>
           <Button
             variant="secondary"
@@ -206,9 +211,13 @@ function FleetCard({
                     ID {m.rustdesk_id}
                     {m.username ? ` · ${m.username}` : ""}
                     {m.owner ? ` · ${m.owner}` : ""}
-                    {!m.online && m.last_seen
-                      ? ` · seen ${timeAgo(m.last_seen)}`
-                      : ""}
+                    {/* Shown for ONLINE machines too, deliberately. The server
+                        keeps a machine marked online for 30s after its last
+                        check-in, so a machine can read green while it has
+                        already gone unreachable — and that gap is exactly what
+                        produces "Failed to connect via rendezvous server". A
+                        green row with a stale "seen" is the tell. */}
+                    {m.last_seen ? ` · seen ${timeAgo(m.last_seen)}` : ""}
                   </div>
                 </div>
                 {isAdmin && (
@@ -289,6 +298,8 @@ function DashboardContent() {
   const [fleetEnabled, setFleetEnabled] = useState(false);
   const [fleetUnavailable, setFleetUnavailable] = useState(false);
   const [technicians, setTechnicians] = useState<Technician[]>([]);
+  const [health, setHealth] = useState<RustDeskHealth | null>(null);
+  const [healthLoading, setHealthLoading] = useState(true);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -393,6 +404,36 @@ function DashboardContent() {
     }
   };
 
+  // Engine-port health (admin only). Kept out of `load` on purpose: it is
+  // diagnostic, so a failure here must never disturb the machine list — it just
+  // leaves the card hidden.
+  useEffect(() => {
+    if (!token || !isAdmin) return;
+    let alive = true;
+    let current: AbortController | null = null;
+    const run = () => {
+      current?.abort();
+      current = new AbortController();
+      getRustDeskHealth(token, current.signal)
+        .then((res) => {
+          if (alive) setHealth(res);
+        })
+        .catch(() => {
+          /* diagnostic only: leave the last good reading on screen */
+        })
+        .finally(() => {
+          if (alive) setHealthLoading(false);
+        });
+    };
+    run();
+    const id = setInterval(run, PRESENCE_POLL_MS);
+    return () => {
+      alive = false;
+      current?.abort();
+      clearInterval(id);
+    };
+  }, [token, isAdmin]);
+
   // Admin needs the technician list to populate the "assign to" dropdown.
   useEffect(() => {
     if (!token || !isAdmin) return;
@@ -410,8 +451,7 @@ function DashboardContent() {
   }, [token, isAdmin]);
 
   const onlineFleet = fleet.filter((m) => m.online);
-  const openCommand = () =>
-    window.dispatchEvent(new Event("rs:open-command"));
+  const openCommand = () => window.dispatchEvent(new Event("rs:open-command"));
 
   return (
     <div className="mx-auto w-full max-w-[1400px] px-6 py-7">
@@ -528,6 +568,9 @@ function DashboardContent() {
         onDelete={onDeleteMember}
         onAssign={onAssignMember}
       />
+
+      {/* Engine port health — admin only, and only once RustDesk is wired in. */}
+      {isAdmin && <EngineHealthCard health={health} loading={healthLoading} />}
     </div>
   );
 }

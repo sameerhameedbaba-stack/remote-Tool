@@ -20,6 +20,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -93,7 +94,7 @@ func (w peerWire) toPeer() Peer {
 		Hostname: firstNonEmpty(w.DeviceName, w.Hostname, w.Alias),
 		Username: firstNonEmpty(w.Username, w.User),
 		OS:       normalizeOS(firstNonEmpty(w.OS, w.Platform)),
-		LastSeen: firstNonEmpty(w.LastSeen, w.LastOnline),
+		LastSeen: normalizeTimestamp(firstNonEmpty(w.LastSeen, w.LastOnline)),
 		// Isolation key: only the authoritative group fields. A free-form,
 		// user-settable "tag" must NOT decide cross-tenant visibility, so it is
 		// deliberately excluded here (it may still be shown elsewhere as a label).
@@ -128,6 +129,57 @@ func normalizeOS(s string) string {
 	default:
 		return l
 	}
+}
+
+// naiveLayouts are the timestamp shapes RustDesk Pro emits WITHOUT a timezone.
+// They are read as UTC, which is what the server stores.
+var naiveLayouts = []string{
+	"2006-01-02 15:04:05",
+	"2006-01-02T15:04:05",
+	"2006-01-02 15:04:05.999999",
+	"2006-01-02T15:04:05.999999",
+	"2006-01-02 15:04",
+	"2006-01-02",
+}
+
+// normalizeTimestamp converts RustDesk's "last seen" into RFC 3339 with an
+// explicit zone.
+//
+// This matters more than it looks. RustDesk returns e.g. "2026-08-06 14:32:11"
+// with no zone; JavaScript's Date parses a zone-less string as LOCAL time, so
+// the console's "seen 5m ago" was wrong by the viewer's UTC offset — a machine
+// that dropped out minutes ago could read as hours, or as a future time that
+// pins to "just now" forever. Since spotting a machine that is *green but
+// stale* is the whole point of that field, a silently skewed value is worse
+// than none.
+//
+// Values that already carry a zone pass through untouched; anything
+// unrecognised is returned as-is so the console can display it verbatim rather
+// than lose it.
+func normalizeTimestamp(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	// Already zoned (RFC 3339 and friends): trust it.
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339} {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t.UTC().Format(time.RFC3339)
+		}
+	}
+	// Epoch seconds or milliseconds.
+	if n, err := strconv.ParseInt(s, 10, 64); err == nil && n > 0 {
+		if n > 1e11 { // milliseconds
+			return time.UnixMilli(n).UTC().Format(time.RFC3339)
+		}
+		return time.Unix(n, 0).UTC().Format(time.RFC3339)
+	}
+	for _, layout := range naiveLayouts {
+		if t, err := time.ParseInLocation(layout, s, time.UTC); err == nil {
+			return t.UTC().Format(time.RFC3339)
+		}
+	}
+	return s
 }
 
 // interpretOnline normalizes the several ways RustDesk Pro has encoded presence.

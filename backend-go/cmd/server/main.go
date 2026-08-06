@@ -17,6 +17,7 @@ import (
 	"github.com/remote-support/backend/internal/cache"
 	"github.com/remote-support/backend/internal/config"
 	"github.com/remote-support/backend/internal/httpapi"
+	"github.com/remote-support/backend/internal/rdhealth"
 	"github.com/remote-support/backend/internal/service"
 	"github.com/remote-support/backend/internal/signal"
 	"github.com/remote-support/backend/internal/store"
@@ -96,7 +97,17 @@ func run(log *slog.Logger) error {
 	defer au.Close()
 	hub := signal.NewHub(log)
 	svcs := service.New(cfg, st, ca, au, hub, log)
-	srv := httpapi.NewServer(cfg, svcs, hub, au, st, ca, log)
+
+	// Watch the RustDesk connection ports in the background so a technician's
+	// "it failed at 14:32" can be checked against what the engine was doing at
+	// 14:32. Independent of the request path: it never blocks a request and its
+	// state is never consulted by /healthz or /readyz.
+	prober := rdhealth.New(cfg.RustDeskServerID, cfg.RustDeskAPIURL, rdhealth.IntervalFromEnv(), log)
+	proberCtx, stopProber := context.WithCancel(context.Background())
+	defer stopProber()
+	go prober.Run(proberCtx)
+
+	srv := httpapi.NewServer(cfg, svcs, hub, au, st, ca, prober, log)
 
 	httpServer := &http.Server{
 		Addr:              cfg.HTTPAddr,
