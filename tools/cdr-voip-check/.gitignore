@@ -1,0 +1,10 @@
+# Never commit client data or lookup caches
+cache/
+output/
+input/
+*.csv
+*.tsv
+*.txt
+*.xlsx
+*.xls
+__pycache__/
