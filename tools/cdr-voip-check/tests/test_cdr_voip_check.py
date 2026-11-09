@@ -24,7 +24,7 @@ class Normalize(unittest.TestCase):
 
     def test_rejects(self):
         for raw in ["", "anonymous", "1699999999", "2026-11-01 10:00:00", "12345", "0502002345",
-                    "6501112345", "nan"]:
+                    "6501112345", "nan", "MNS.18886107052.BL", "a60d7f75-ec70-4395-b9ed-92e3fee458f1"]:
             self.assertEqual(cvc.normalize(raw)[0], None, raw)
 
     def test_international(self):

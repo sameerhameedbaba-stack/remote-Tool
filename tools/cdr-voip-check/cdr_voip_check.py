@@ -76,6 +76,8 @@ def normalize(value):
         except ValueError:
             return None, None
     s = re.sub(r"^(sips?|tel):", "", s, flags=re.I).split("@", 1)[0].split(";", 1)[0]
+    if re.search(r"[A-Za-z]", s):  # names, UUIDs, "MNS.18885551234.BL" etc. are not phone numbers
+        return None, None
     plus = s.startswith("+")
     digits = re.sub(r"\D", "", s)
     if len(digits) == 11 and digits[0] == "1":
